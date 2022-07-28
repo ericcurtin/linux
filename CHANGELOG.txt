@@ -1,0 +1,3 @@
+git merge linux-rt-devel/linux-5.19.y-rt
+/boot/config-5.19.0-rc7.asahi1.1.el9.aarch64 added
+
