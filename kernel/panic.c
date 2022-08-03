@@ -429,7 +429,6 @@ const struct taint_flag taint_flags[TAINT_FLAGS_COUNT] = {
 	[ TAINT_AUX ]			= { 'X', ' ', true },
 	[ TAINT_RANDSTRUCT ]		= { 'T', ' ', true },
 	[ TAINT_TEST ]			= { 'N', ' ', true },
-	[ TAINT_18 ]			= { '?', '-', false },
 	[ TAINT_19 ]			= { '?', '-', false },
 	[ TAINT_20 ]			= { '?', '-', false },
 	[ TAINT_21 ]			= { '?', '-', false },
