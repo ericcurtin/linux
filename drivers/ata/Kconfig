@@ -388,6 +388,21 @@ config SATA_SX4
 
 	  If unsure, say N.
 
+config ATA_SSS_DEFAULT
+        bool "ATA Staggered Spin-up default"
+        default Y
+        help
+          This option denotes the default for Staggered Spin-up
+          capability on storage controllers. Staggered Spin-up reduces
+          peak power draw, but decreases performance. If this config is
+          set to N, Staggered Spin-up capability will be ignored by
+          default.
+
+          This default can be overridden by using the kernel argument
+          libahci.ignore_sss.
+
+          If unsure, say Y.
+
 config ATA_BMDMA
 	bool "ATA BMDMA support"
 	depends on HAS_DMA

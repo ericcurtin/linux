@@ -33,7 +33,7 @@
 #include "libata.h"
 
 static int ahci_skip_host_reset;
-int ahci_ignore_sss;
+int ahci_ignore_sss = !IS_ENABLED(CONFIG_ATA_SSS_DEFAULT);
 EXPORT_SYMBOL_GPL(ahci_ignore_sss);
 
 module_param_named(skip_host_reset, ahci_skip_host_reset, int, 0444);
