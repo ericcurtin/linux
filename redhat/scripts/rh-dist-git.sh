@@ -23,7 +23,7 @@ fi
 
 echo "Cloning the repository"
 # clone the dist-git, considering cache
-tmpdir=$("$REDHAT"/scripts/clone_tree.sh "$RHDISTGIT" "$RHDISTGIT_CACHE" "$RHDISTGIT_TMP" "$PACKAGE_NAME" "$RHEL_MAJOR" "$RHPKG_BIN");
+tmpdir=$("$REDHAT"/scripts/clone_tree.sh);
 
 echo "Switching the branch"
 # change in the correct branch
@@ -32,7 +32,7 @@ $RHPKG_BIN switch-branch "$RHDISTGIT_BRANCH" || die "switching to branch $RHDIST
 
 echo "Copying updated files"
 # copy the required files (redhat/git/files)
-"$REDHAT"/scripts/expand_srpm.sh "$TOPDIR" "$tmpdir" "$PACKAGE_NAME" "$SRPM";
+"$REDHAT"/scripts/expand_srpm.sh "$tmpdir";
 
 echo "Uploading new tarballs"
 # upload tarballs
@@ -46,7 +46,7 @@ upload_list="$TARBALL $KABI_TARBALL $KABIDW_TARBALL"
 upload $upload_list
 
 echo "Creating diff for review ($tmpdir/diff) and changelog"
-# diff the result (redhat/cvs/dontdiff). note: diff reuturns 1 if
+# diff the result (redhat/git/dontdiff). note: diff reuturns 1 if
 # differences were found
 diff -X "$REDHAT"/git/dontdiff -upr "$tmpdir/$PACKAGE_NAME" "$REDHAT"/rpm/SOURCES/ > "$tmpdir"/diff;
 # creating the changelog file
