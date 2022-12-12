@@ -262,6 +262,8 @@ Summary: The Linux kernel
 %define with_bpftool 0
 # selftests turns on bpftool
 %define with_selftests 0
+# for debugging issues with build process
+%define with_verbose 1
 %endif
 
 %if %{with_verbose}
