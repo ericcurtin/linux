@@ -1,1 +1,1 @@
-CONFIG_RUST=y
+# CONFIG_RUST is not set
