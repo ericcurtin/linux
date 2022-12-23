@@ -1,3 +1,14 @@
+* Fri Dec 23 2022 Neal Gompa <neal@gompa.dev> [6.1.1-450.asahi]
+- redhat: Tweak spec to do a verbose build (Neal Gompa)
+- redhat: Change to clang toolchain completely (Eric Curtin)
+- redhat/configs: aarch64: Enable Asahi DRM driver (Neal Gompa)
+- scripts: new terminology in modern bindgen (Eric Curtin)
+- scripts: Exclude Rust CUs with pahole (Martin Rodriguez Reboredo)
+- redhat/configs: Enable DRM_SCHED and DRM_GEM_SHMEM_HELPER (Neal Gompa)
+- redhat/configs: Various config changes required for Apple Silicon GPU (Eric Curtin)
+- redhat: Turn on support for Rust code (Neal Gompa)
+Resolves: 
+
 * Fri Dec 23 2022 Neal Gompa <neal@gompa.dev> [6.1.1-400.asahi]
 - redhat: Enable kernel-headers build (Neal Gompa)
 - redhat/configs: Switch AArch64 to 16K pages (Neal Gompa)
