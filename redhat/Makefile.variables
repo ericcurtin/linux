@@ -13,7 +13,7 @@
 
 # This is the source branch that you are building out of typically this is
 # the current branch.
-DIST_BRANCH ?= "fedora-6.1"
+DIST_BRANCH ?= "fedora-asahi-6.1"
 
 # This is the dist release suffix used in the package release, eg. .fc34,
 # .el8 etc. In a different branch this may be set to a fixed value.
@@ -27,7 +27,7 @@ DISTRO ?=
 # should be tracked in a local branch. This would be "master" for the
 # Linus master branch or linux-5.x.y for a stable branch. It can also be
 # any other upstream you have added as a branch locally.
-UPSTREAM_BRANCH ?= linux-6.1.y
+UPSTREAM_BRANCH ?= fedora-6.1
 
 # If VERSION_ON_UPSTREAM is set, the versioning of the rpm package is based
 # on a branch tracking upstream. This allows for generating rpms
@@ -61,7 +61,7 @@ INCLUDE_RHEL_FILES:=1
 # the kernel src.rpm, which will contain shas and commits not upstream. The
 # value of PATCHLIST_URL in this case should point to the git repository where
 # the commits are located, and will be added as a prefix to the shas listed.
-PATCHLIST_URL ?= "https://gitlab.com/cki-project/kernel-ark/-/commit"
+PATCHLIST_URL ?= "https://gitlab.com/fedora-asahi/kernel-asahi/-/commit"
 
 # This can be used to change the filename of the specfile.  For example, it can
 # be set to "kernel" for kernel.spec or "kernel-rt" for kernel-rt.spec.  This
