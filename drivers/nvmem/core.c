@@ -470,8 +470,8 @@ static int nvmem_cell_info_to_nvmem_cell_entry_nodup(struct nvmem_device *nvmem,
 	cell->np = info->np;
 
 	if (cell->nbits)
-		cell->bytes = DIV_ROUND_UP(cell->nbits + cell->bit_offset,
-					   BITS_PER_BYTE);
+		cell->bytes = round_up(DIV_ROUND_UP(cell->nbits + cell->bit_offset,
+					   BITS_PER_BYTE), nvmem->word_size);
 
 	if (!IS_ALIGNED(cell->offset, nvmem->stride)) {
 		dev_err(&nvmem->dev,
@@ -718,9 +718,9 @@ static int nvmem_add_cells_from_of(struct nvmem_device *nvmem)
 		}
 
 		if (cell->nbits)
-			cell->bytes = DIV_ROUND_UP(
+			cell->bytes = round_up(DIV_ROUND_UP(
 					cell->nbits + cell->bit_offset,
-					BITS_PER_BYTE);
+					BITS_PER_BYTE), nvmem->word_size);
 
 		if (!IS_ALIGNED(cell->offset, nvmem->stride)) {
 			dev_err(dev, "cell %s unaligned to nvmem stride %d\n",
@@ -837,20 +837,16 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 
 	dev_dbg(&nvmem->dev, "Registering nvmem device %s\n", config->name);
 
-	rval = device_register(&nvmem->dev);
-	if (rval)
-		goto err_put_device;
-
 	if (nvmem->nkeepout) {
 		rval = nvmem_validate_keepouts(nvmem);
 		if (rval)
-			goto err_device_del;
+			return ERR_PTR(rval);
 	}
 
 	if (config->compat) {
 		rval = nvmem_sysfs_setup_compat(nvmem, config);
 		if (rval)
-			goto err_device_del;
+			return ERR_PTR(rval);
 	}
 
 	if (config->cells) {
@@ -867,19 +863,21 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 	if (rval)
 		goto err_remove_cells;
 
+	rval = device_register(&nvmem->dev);
+	if (rval)
+		goto err_put_device;
+
 	blocking_notifier_call_chain(&nvmem_notifier, NVMEM_ADD, nvmem);
 
 	return nvmem;
 
+err_put_device:
+	put_device(&nvmem->dev);
 err_remove_cells:
 	nvmem_device_remove_all_cells(nvmem);
 err_teardown_compat:
 	if (config->compat)
 		nvmem_sysfs_remove_compat(nvmem, config);
-err_device_del:
-	device_del(&nvmem->dev);
-err_put_device:
-	put_device(&nvmem->dev);
 
 	return ERR_PTR(rval);
 }
@@ -1379,15 +1377,23 @@ EXPORT_SYMBOL_GPL(nvmem_cell_put);
 static void nvmem_shift_read_buffer_in_place(struct nvmem_cell_entry *cell, void *buf)
 {
 	u8 *p, *b;
-	int i, extra, bit_offset = cell->bit_offset;
+	int i, padding, extra, bit_offset = cell->bit_offset;
+	int bytes = cell->bytes;
 
 	p = b = buf;
 	if (bit_offset) {
+		padding = bit_offset/8;
+		if (padding) {
+		      memmove(buf, buf + padding, bytes - padding);
+		      bit_offset -= BITS_PER_BYTE * padding;
+		      bytes -= padding;
+		}
+
 		/* First shift */
 		*b++ >>= bit_offset;
 
 		/* setup rest of the bytes if any */
-		for (i = 1; i < cell->bytes; i++) {
+		for (i = 1; i < bytes; i++) {
 			/* Get bits from next byte and shift them towards msb */
 			*p |= *b << (BITS_PER_BYTE - bit_offset);
 
@@ -1400,7 +1406,7 @@ static void nvmem_shift_read_buffer_in_place(struct nvmem_cell_entry *cell, void
 	}
 
 	/* result fits in less bytes */
-	extra = cell->bytes - DIV_ROUND_UP(cell->nbits, BITS_PER_BYTE);
+	extra = bytes - DIV_ROUND_UP(cell->nbits, BITS_PER_BYTE);
 	while (--extra >= 0)
 		*p-- = 0;
 
