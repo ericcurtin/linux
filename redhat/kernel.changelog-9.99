@@ -1,3 +1,15 @@
+* Mon Dec 26 2022 Neal Gompa <neal@gompa.dev> [6.1.1-450.1.asahi]
+- rust: alloc: add missing comment on `try_resize` (Miguel Ojeda)
+- rust: kernel: clean Rust 1.66.0 `rustdoc::broken_intra_doc_links` warnings (Miguel Ojeda)
+- rust: upgrade to Rust 1.66.0 (Miguel Ojeda)
+- ci: reduce frequency (Miguel Ojeda)
+- rust: minor documentation spelling fix (Trevor Gross)
+- rust: build_error: switch `choice` to `config` (Miguel Ojeda)
+- rust: build_error: remove `RUST_BUILD_ASSERT_WARN` support (Miguel Ojeda)
+- rust: build_error: export `rust_build_error` (Miguel Ojeda)
+- rust: build_error: remove note on optimization (Miguel Ojeda)
+Resolves: 
+
 * Fri Dec 23 2022 Neal Gompa <neal@gompa.dev> [6.1.1-450.asahi]
 - redhat: Tweak spec to do a verbose build (Neal Gompa)
 - redhat: Change to clang toolchain completely (Eric Curtin)
