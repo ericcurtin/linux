@@ -19,10 +19,10 @@ obj-$(CONFIG_RUST) += alloc.o bindings.o kernel.o
 always-$(CONFIG_RUST) += exports_alloc_generated.h exports_bindings_generated.h \
     exports_kernel_generated.h
 
-ifdef CONFIG_RUST_BUILD_ASSERT_DENY
-always-$(CONFIG_RUST) += build_error.o
-else
+ifdef CONFIG_RUST_BUILD_ASSERT_ALLOW
 obj-$(CONFIG_RUST) += build_error.o
+else
+always-$(CONFIG_RUST) += build_error.o
 endif
 
 obj-$(CONFIG_RUST) += exports.o
@@ -394,7 +394,7 @@ rust-analyzer:
 
 $(obj)/core.o: private skip_clippy = 1
 $(obj)/core.o: private skip_flags = -Dunreachable_pub
-$(obj)/core.o: private rustc_target_flags = $(core-cfgs)
+$(obj)/core.o: private rustc_target_flags = $(core-cfgs) -Aunused-imports
 $(obj)/core.o: $(RUST_LIB_SRC)/core/src/lib.rs $(obj)/target.json FORCE
 	$(call if_changed_dep,rustc_library)
 
