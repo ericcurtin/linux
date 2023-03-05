@@ -1,3 +1,7 @@
+* Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-400.1.asahi]
+- arm64: Export esr_get_class_string (Asahi Lina)
+Resolves: 
+
 * Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-400.asahi]
 - redhat: Enable kernel-headers build (Neal Gompa)
 - redhat/configs: Switch AArch64 to 16K pages (Neal Gompa)
