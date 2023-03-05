@@ -1,3 +1,7 @@
+* Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-400.3.asahi]
+- uapi: drm/asahi: C++ to C style comment (Eric Curtin)
+Resolves: 
+
 * Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-400.2.asahi]
 - redhat/kernel.spec.template: Disable UKI builds for now (Neal Gompa)
 Resolves: 
