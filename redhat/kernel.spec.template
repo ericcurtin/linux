@@ -106,11 +106,8 @@ Summary: The Linux kernel
 %global zipmodules 1
 %endif
 
-%ifarch x86_64
-%global efiuki 1
-%else
+# Disable UKI while we support F37
 %global efiuki 0
-%endif
 
 %if %{zipmodules}
 %global zipsed -e 's/\.ko$/\.ko.xz/'
