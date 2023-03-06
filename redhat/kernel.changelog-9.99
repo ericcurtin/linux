@@ -1,3 +1,14 @@
+* Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-450.3.asahi]
+- redhat: Change to clang toolchain completely (Eric Curtin)
+- redhat: Tweak spec to do a verbose build (Neal Gompa)
+- redhat/configs: aarch64: Enable Asahi DRM driver (Neal Gompa)
+- Rust 1.67.1 support (Eric Curtin)
+- scripts: new terminology in modern bindgen (Eric Curtin)
+- redhat/configs: Enable DRM_SCHED and DRM_GEM_SHMEM_HELPER (Neal Gompa)
+- redhat/configs: Various config changes required for Apple Silicon GPU (Eric Curtin)
+- redhat: Turn on support for Rust code (Neal Gompa)
+Resolves: 
+
 * Sun Mar 05 2023 Neal Gompa <neal@gompa.dev> [6.2.2-400.3.asahi]
 - uapi: drm/asahi: C++ to C style comment (Eric Curtin)
 Resolves: 
