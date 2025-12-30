@@ -12,8 +12,10 @@
 #include <linux/bio.h>
 #include <linux/highmem.h>
 #include <linux/initrd.h>
+#include <linux/init_syscalls.h>
 
 #include "initerofs.h"
+#include "do_mounts.h"
 
 #define INITEROFS_BLKDEV_NAME	"initerofs"
 #define INITEROFS_SECTOR_SIZE	512
@@ -126,8 +128,31 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
 		return NULL;
 	}
 
-	pr_info("initerofs: created block device /dev/%s (%lu bytes)\n",
-		INITEROFS_BLKDEV_NAME, size);
+	pr_info("initerofs: registered block device major %d (%lu bytes)\n",
+		initerofs_major, size);
+
+	/* Create /dev directory if it doesn't exist */
+	err = init_mkdir("/dev", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create /dev: %d\n", err);
+		del_gendisk(initerofs_disk);
+		put_disk(initerofs_disk);
+		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
+		return NULL;
+	}
+
+	/* Create the device node */
+	err = create_dev("/dev/" INITEROFS_BLKDEV_NAME,
+			 MKDEV(initerofs_major, 0));
+	if (err) {
+		pr_err("initerofs: failed to create device node: %d\n", err);
+		del_gendisk(initerofs_disk);
+		put_disk(initerofs_disk);
+		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
+		return NULL;
+	}
+
+	pr_info("initerofs: created /dev/%s\n", INITEROFS_BLKDEV_NAME);
 
 	return "/dev/" INITEROFS_BLKDEV_NAME;
 }
@@ -137,6 +162,7 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
  */
 void __init initerofs_blkdev_destroy(void)
 {
+	init_unlink("/dev/" INITEROFS_BLKDEV_NAME);
 	if (initerofs_disk) {
 		del_gendisk(initerofs_disk);
 		put_disk(initerofs_disk);

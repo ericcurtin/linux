@@ -100,7 +100,9 @@ bool __init initerofs_detect(void)
  */
 int __init initerofs_mount_root(void)
 {
-	char *blkdev_path;
+	struct file *file;
+	loff_t pos = 0;
+	ssize_t written;
 	unsigned long size;
 	int err;
 	ktime_t start_time, end_time;
@@ -117,43 +119,60 @@ int __init initerofs_mount_root(void)
 		initrd_start, size);
 
 	/*
-	 * Mount the EROFS filesystem using direct memory-backed block device.
+	 * Mount the EROFS filesystem using file-backed mode.
 	 *
-	 * We create a simple block device that serves reads directly from the
-	 * initrd memory region. This avoids any memory copy - EROFS reads the
-	 * data directly from where the bootloader placed it.
+	 * We write the memory region to a file in the initial rootfs and mount
+	 * EROFS from it. While this does involve a memory copy, the copy is
+	 * done once at boot and the data remains in the page cache. This is
+	 * still significantly faster than traditional initramfs because:
 	 *
-	 * Benefits over file-backed approach:
-	 * 1. Zero-copy: No need to write initrd to a backing file
-	 * 2. Immediate availability: Block device is ready instantly
-	 * 3. Lower memory pressure: No page cache duplication
+	 * 1. No decompression step - EROFS handles compression on-demand
+	 * 2. No cpio extraction - files are accessed directly from EROFS
+	 * 3. Overlayfs provides writability with copy-on-write semantics
 	 */
 
-	/* Create the memory-backed block device */
-	blkdev_path = initerofs_blkdev_create((void *)initrd_start, size);
-	if (!blkdev_path) {
-		pr_err("initerofs: failed to create block device\n");
-		return -ENOMEM;
+	/* Create temporary directory and mount point */
+	err = init_mkdir("/initerofs_tmp", 0700);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create temp directory: %d\n", err);
+		return err;
 	}
 
-	/* Create mount point */
 	err = init_mkdir("/root", 0755);
 	if (err && err != -EEXIST) {
 		pr_err("initerofs: failed to create /root directory: %d\n", err);
-		goto err_blkdev;
+		goto err_rmdir;
 	}
 
-	/* Mount EROFS from the memory-backed block device */
-	err = init_mount(blkdev_path, "/root", "erofs", MS_RDONLY, NULL);
+	/* Write EROFS image to backing file */
+	file = filp_open("/initerofs_tmp/erofs.img",
+			 O_WRONLY | O_CREAT | O_LARGEFILE, 0400);
+	if (IS_ERR(file)) {
+		err = PTR_ERR(file);
+		pr_err("initerofs: failed to create backing file: %d\n", err);
+		goto err_rmdir;
+	}
+
+	written = kernel_write(file, (void *)initrd_start, size, &pos);
+	fput(file);
+
+	if (written != size) {
+		pr_err("initerofs: failed to write image: %zd\n", written);
+		err = written < 0 ? written : -EIO;
+		goto err_unlink;
+	}
+
+	/* Mount EROFS from the backing file */
+	err = init_mount("/initerofs_tmp/erofs.img", "/root", "erofs",
+			 MS_RDONLY, NULL);
 	if (err) {
-		pr_err("initerofs: failed to mount EROFS from %s: %d\n",
-		       blkdev_path, err);
-		goto err_blkdev;
+		pr_err("initerofs: failed to mount EROFS: %d\n", err);
+		goto err_unlink;
 	}
 
 	end_time = ktime_get();
 	elapsed_ns = ktime_to_ns(ktime_sub(end_time, start_time));
-	pr_info("initerofs: EROFS mounted in %lld.%06lld ms (zero-copy)\n",
+	pr_info("initerofs: EROFS mounted in %lld.%06lld ms\n",
 		elapsed_ns / 1000000, (elapsed_ns % 1000000));
 
 	/*
@@ -208,6 +227,10 @@ int __init initerofs_mount_root(void)
 		goto err_unmount_tmpfs;
 	}
 
+	/* Clean up temp file after mount */
+	init_unlink("/initerofs_tmp/erofs.img");
+	init_rmdir("/initerofs_tmp");
+
 	/* Move overlayfs mount to root */
 	init_chdir("/overlay_merged");
 	err = init_mount(".", "/", NULL, MS_MOVE, NULL);
@@ -235,8 +258,10 @@ err_rmdir_upper:
 err_unmount_erofs:
 	init_umount("/root", 0);
 
-err_blkdev:
-	initerofs_blkdev_destroy();
+err_unlink:
+	init_unlink("/initerofs_tmp/erofs.img");
+err_rmdir:
+	init_rmdir("/initerofs_tmp");
 	return err;
 }
 
