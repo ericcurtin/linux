@@ -152,7 +152,8 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
 		return NULL;
 	}
 
-	pr_info("initerofs: created /dev/%s\n", INITEROFS_BLKDEV_NAME);
+	pr_info("initerofs: created /dev/%s (major %d)\n",
+		INITEROFS_BLKDEV_NAME, initerofs_major);
 
 	return "/dev/" INITEROFS_BLKDEV_NAME;
 }

@@ -45,6 +45,25 @@ int __init initerofs_mount_root(void);
  */
 bool __init initerofs_should_retain(void);
 
+/**
+ * initerofs_blkdev_create - Create a memory-backed block device
+ * @data: Pointer to the initrd memory region
+ * @size: Size of the initrd in bytes
+ *
+ * Creates a read-only block device that serves data directly from
+ * the initrd memory region, avoiding unnecessary memory copies.
+ *
+ * Return: Device path string on success, NULL on failure
+ */
+char * __init initerofs_blkdev_create(void *data, unsigned long size);
+
+/**
+ * initerofs_blkdev_destroy - Clean up the memory-backed block device
+ *
+ * Called if mount fails to release resources.
+ */
+void __init initerofs_blkdev_destroy(void);
+
 #else /* !CONFIG_INITEROFS */
 
 static inline bool __init initerofs_detect(void) { return false; }
