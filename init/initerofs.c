@@ -32,6 +32,7 @@
 #include <linux/namei.h>
 #include <linux/memblock.h>
 #include <linux/mm.h>
+#include <linux/io.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/highmem.h>
@@ -40,9 +41,10 @@
 #include <linux/kstrtox.h>
 #include <linux/security.h>
 #include <linux/file.h>
-#include <linux/pseudo_fs.h>
+#include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
+#include "initerofs.h"
 
 /* Physical address and size of the initerofs image */
 phys_addr_t phys_initerofs_start __initdata;
@@ -143,48 +145,6 @@ bool __init initerofs_enabled(void)
 }
 
 /*
- * Address space operations for memory-backed initerofs.
- * This provides direct access to the EROFS image in memory without
- * requiring a block device.
- */
-static int initerofs_read_folio(struct file *file, struct folio *folio)
-{
-	loff_t pos = folio_pos(folio);
-	size_t len = folio_size(folio);
-	void *src, *dst;
-
-	if (!initerofs_data) {
-		folio_unlock(folio);
-		return -EIO;
-	}
-
-	if (pos >= phys_initerofs_size) {
-		folio_zero_range(folio, 0, len);
-		folio_mark_uptodate(folio);
-		folio_unlock(folio);
-		return 0;
-	}
-
-	if (pos + len > phys_initerofs_size)
-		len = phys_initerofs_size - pos;
-
-	src = initerofs_data + pos;
-	dst = kmap_local_folio(folio, 0);
-	memcpy(dst, src, len);
-	if (len < folio_size(folio))
-		memset(dst + len, 0, folio_size(folio) - len);
-	kunmap_local(dst);
-
-	folio_mark_uptodate(folio);
-	folio_unlock(folio);
-	return 0;
-}
-
-static const struct address_space_operations initerofs_aops = {
-	.read_folio = initerofs_read_folio,
-};
-
-/*
  * Mount the EROFS image from memory as the root filesystem.
  * This is called during kernel initialization to set up the early root.
  *
@@ -192,6 +152,9 @@ static const struct address_space_operations initerofs_aops = {
  */
 int __init initerofs_mount_root(void)
 {
+	struct file *file;
+	loff_t pos = 0;
+	ssize_t written;
 	int err;
 
 	if (!initerofs_enabled())
@@ -248,27 +211,21 @@ int __init initerofs_mount_root(void)
 	}
 
 	/* Write EROFS image to temp file */
-	{
-		struct file *file;
-		loff_t pos = 0;
-		ssize_t written;
+	file = filp_open("/initerofs_tmp/erofs.img",
+			 O_WRONLY | O_CREAT | O_LARGEFILE, 0400);
+	if (IS_ERR(file)) {
+		err = PTR_ERR(file);
+		pr_err("initerofs: failed to create temp file: %d\n", err);
+		goto err_rmdir;
+	}
 
-		file = filp_open("/initerofs_tmp/erofs.img",
-				 O_WRONLY | O_CREAT | O_LARGEFILE, 0400);
-		if (IS_ERR(file)) {
-			err = PTR_ERR(file);
-			pr_err("initerofs: failed to create temp file: %d\n", err);
-			goto err_rmdir;
-		}
+	written = kernel_write(file, initerofs_data, phys_initerofs_size, &pos);
+	fput(file);
 
-		written = kernel_write(file, initerofs_data, phys_initerofs_size, &pos);
-		fput(file);
-
-		if (written != phys_initerofs_size) {
-			pr_err("initerofs: failed to write image: %zd\n", written);
-			err = written < 0 ? written : -EIO;
-			goto err_unlink;
-		}
+	if (written != phys_initerofs_size) {
+		pr_err("initerofs: failed to write image: %zd\n", written);
+		err = written < 0 ? written : -EIO;
+		goto err_unlink;
 	}
 
 	/* Mount EROFS from the temp file */
@@ -338,121 +295,3 @@ void __init free_initerofs_mem(void)
 
 	pr_info("initerofs: freed memory region\n");
 }
-
-/*
- * Documentation note:
- *
- * Performance comparison with traditional initramfs:
- *
- * Traditional initramfs:
- * 1. Bootloader loads compressed cpio archive to memory
- * 2. Kernel decompresses cpio archive (CPU time + temporary memory)
- * 3. Kernel extracts files to tmpfs (memory for both archive and files)
- * 4. Files are now accessible in tmpfs
- * Memory used: compressed archive + decompressed archive + extracted files
- *
- * initerofs:
- * 1. Bootloader loads EROFS image to memory
- * 2. Kernel mounts EROFS directly from memory (no decompression step)
- * 3. Files are accessible immediately via EROFS
- * Memory used: just the EROFS image
- *
- * Benefits:
- * - Faster boot: No decompression/extraction step
- * - Lower memory: No duplicate data in memory
- * - On-demand decompression: EROFS can use transparent compression
- * - Better for read-only root: EROFS is optimized for read-only access
- *
- * The EROFS image can still be compressed (LZ4, etc.) and will be
- * decompressed on-demand when files are accessed, providing the best
- * of both worlds: compact storage and efficient access.
- */
-	}
-
-	pr_info("initerofs: mounting EROFS from memory at 0x%llx (size %lu bytes)\n",
-		(unsigned long long)phys_initerofs_start, phys_initerofs_size);
-
-	/*
-	 * Mount the EROFS filesystem using file-backed mode.
-	 * EROFS's file-backed mode (CONFIG_EROFS_FS_BACKED_BY_FILE) allows
-	 * mounting from a regular file, which we provide here backed by memory.
-	 */
-	err = init_mount("initerofs", "/root", "erofs", MS_RDONLY, NULL);
-	if (err) {
-		pr_err("initerofs: failed to mount EROFS: %d\n", err);
-		fput(backing_file);
-		memunmap(initerofs_data);
-		initerofs_data = NULL;
-		return err;
-	}
-
-	pr_info("initerofs: successfully mounted EROFS as root filesystem\n");
-
-	/* Notify security subsystem */
-	security_initramfs_populated();
-
-	return 0;
-}
-
-/*
- * Free initerofs memory after switching to the real root filesystem.
- * This is optional - the memory can be retained if needed.
- */
-void __init free_initerofs_mem(void)
-{
-	unsigned long start, end;
-
-	if (!initerofs_enabled())
-		return;
-
-	if (do_retain_initerofs) {
-		pr_info("initerofs: retaining memory as requested\n");
-		return;
-	}
-
-	if (initerofs_data) {
-		memunmap(initerofs_data);
-		initerofs_data = NULL;
-	}
-
-	/* Free the reserved memory region */
-	start = round_down(phys_initerofs_start, PAGE_SIZE);
-	end = round_up(phys_initerofs_start + phys_initerofs_size, PAGE_SIZE);
-
-#ifdef CONFIG_ARCH_KEEP_MEMBLOCK
-	memblock_free((void *)__va(start), end - start);
-#endif
-	free_reserved_area((void *)__va(start), (void *)__va(end),
-			   POISON_FREE_INITMEM, "initerofs");
-
-	pr_info("initerofs: freed memory region\n");
-}
-
-/*
- * Documentation note:
- *
- * Performance comparison with traditional initramfs:
- *
- * Traditional initramfs:
- * 1. Bootloader loads compressed cpio archive to memory
- * 2. Kernel decompresses cpio archive (CPU time + temporary memory)
- * 3. Kernel extracts files to tmpfs (memory for both archive and files)
- * 4. Files are now accessible in tmpfs
- * Memory used: compressed archive + decompressed archive + extracted files
- *
- * initerofs:
- * 1. Bootloader loads EROFS image to memory
- * 2. Kernel mounts EROFS directly from memory (no decompression step)
- * 3. Files are accessible immediately via EROFS
- * Memory used: just the EROFS image
- *
- * Benefits:
- * - Faster boot: No decompression/extraction step
- * - Lower memory: No duplicate data in memory
- * - On-demand decompression: EROFS can use transparent compression
- * - Better for read-only root: EROFS is optimized for read-only access
- *
- * The EROFS image can still be compressed (LZ4, etc.) and will be
- * decompressed on-demand when files are accessed, providing the best
- * of both worlds: compact storage and efficient access.
- */
