@@ -214,6 +214,13 @@ int __init initerofs_mount_root(void)
 		goto err_unmap;
 	}
 
+	/* Ensure /root mount point exists */
+	err = init_mkdir("/root", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create /root directory: %d\n", err);
+		goto err_rmdir;
+	}
+
 	/* Write EROFS image to temp file */
 	file = filp_open("/initerofs_tmp/erofs.img",
 			 O_WRONLY | O_CREAT | O_LARGEFILE, 0400);
@@ -232,9 +239,9 @@ int __init initerofs_mount_root(void)
 		goto err_unlink;
 	}
 
-	/* Mount EROFS from the temp file */
+	/* Mount EROFS from the temp file using file-backed mode */
 	err = init_mount("/initerofs_tmp/erofs.img", "/root", "erofs",
-			 MS_RDONLY, NULL);
+			 MS_RDONLY, "source=/initerofs_tmp/erofs.img");
 	if (err) {
 		pr_err("initerofs: failed to mount EROFS: %d\n", err);
 		goto err_unlink;
