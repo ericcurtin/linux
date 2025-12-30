@@ -1485,21 +1485,22 @@ config INITEROFS
 	  File System) image directly from memory as the early root filesystem,
 	  without the need to unpack a cpio archive like traditional initramfs.
 
-	  Unlike initramfs, which requires decompressing and extracting files
-	  into tmpfs during boot, initerofs mounts the EROFS image directly
-	  from the memory region provided by the bootloader. This provides
-	  several benefits:
+	  When enabled, the kernel automatically detects if the initrd is in
+	  EROFS format (by checking the magic number) and mounts it directly
+	  instead of unpacking as cpio. This provides several benefits:
 
 	  - Faster boot: No decompression or extraction step is needed
 	  - Lower memory usage: No duplicate data (archive + extracted files)
 	  - On-demand decompression: EROFS supports transparent compression
 	  - Writable via overlayfs: tmpfs upper layer allows modifications
 
-	  The bootloader must load the EROFS image to a memory region and pass
-	  the physical address and size to the kernel via the boot parameter:
-	    initerofs=<phys_addr>,<size>
+	  To use initerofs:
+	  1. Create EROFS image: mkfs.erofs -zlz4 initramfs.img rootfs/
+	  2. Use this image as your initrd (bootloader loads it normally)
+	  3. The kernel auto-detects EROFS and mounts directly
 
-	  For example: initerofs=0x10000000,0x1000000
+	  No special kernel parameters are required - just use the EROFS
+	  image as your initrd and the kernel handles the rest.
 
 	  Note: This requires EROFS, overlayfs, and tmpfs to be built into the
 	  kernel (not as modules) since they're needed during early boot.

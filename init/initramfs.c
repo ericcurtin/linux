@@ -611,10 +611,6 @@ void __init reserve_initrd_mem(void)
 	phys_addr_t start;
 	unsigned long size;
 
-	/* Reserve initerofs memory if configured */
-	if (IS_ENABLED(CONFIG_INITEROFS))
-		reserve_initerofs_mem();
-
 	/* Ignore the virtul address computed during device tree parsing */
 	initrd_start = initrd_end = 0;
 
@@ -722,23 +718,30 @@ static void __init populate_initrd_image(char *err)
 
 static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
-	/* Check if initerofs should be used instead of unpacking */
-	if (IS_ENABLED(CONFIG_INITEROFS) && initerofs_enabled()) {
-		int err = initerofs_mount_root();
-		if (!err) {
-			pr_info("initerofs: using EROFS as initial rootfs\n");
-			goto done;
-		}
-		pr_warn("initerofs: failed to mount (%d), falling back to initramfs\n", err);
-	}
-
-	/* Load the built in initramfs */
+	/* Load the built in initramfs first */
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
 		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
 
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
+
+	/*
+	 * Check if the initrd is in EROFS format. If so, mount it directly
+	 * instead of unpacking as cpio. This provides significant boot time
+	 * and memory savings.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initerofs_detect()) {
+		int ret = initerofs_mount_root();
+		if (!ret) {
+			pr_info("initerofs: using EROFS as initial rootfs\n");
+			/* Memory is handled by initerofs, skip normal free */
+			if (!initerofs_should_retain() && !kexec_free_initrd())
+				free_initrd_mem(initrd_start, initrd_end);
+			goto done;
+		}
+		pr_warn("initerofs: mount failed (%d), trying cpio unpack\n", ret);
+	}
 
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
@@ -754,9 +757,6 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 #endif
 	}
 
-done:
-	security_initramfs_populated();
-
 	/*
 	 * If the initrd region is overlapped with crashkernel reserved region,
 	 * free only memory that is not part of crashkernel region.
@@ -769,6 +769,9 @@ done:
 		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
 			pr_err("Failed to create initrd sysfs file");
 	}
+
+done:
+	security_initramfs_populated();
 	initrd_start = 0;
 	initrd_end = 0;
 

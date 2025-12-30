@@ -8,10 +8,10 @@
  * File System) image directly from memory as the early root filesystem, without
  * the need to unpack a cpio archive like traditional initramfs.
  *
- * Native memory-backed implementation:
- * - Creates a simple memory-backed block device from the physical memory region
- * - EROFS mounts directly from this block device without any data copying
- * - Zero-copy approach: memory is used in-place
+ * The implementation automatically detects EROFS format by checking the magic
+ * number at offset 1024. If the initramfs is in EROFS format, it mounts it
+ * directly instead of unpacking as cpio. This uses the existing initramfs
+ * memory reservation infrastructure.
  *
  * Performance benefits vs. traditional initramfs:
  * - No double-buffering: Traditional initramfs requires both the compressed
@@ -22,13 +22,11 @@
  *   not an extracted copy of all files.
  * - EROFS native compression: EROFS supports transparent compression (LZ4, etc.)
  *   which is decompressed on-demand during file access, further saving memory.
- * - Zero-copy mounting: The memory region is used directly without copying.
  *
  * Usage:
- * - Boot parameter: initerofs=<phys_addr>,<size>
- *   Example: initerofs=0x10000000,0x1000000
- * - The bootloader must load the EROFS image to the specified physical address
- *   and pass the address and size to the kernel.
+ * - Create an EROFS image: mkfs.erofs -zlz4 initramfs.img rootfs/
+ * - Use initramfs.img as your initrd (bootloader loads it as usual)
+ * - The kernel automatically detects EROFS format and mounts directly
  */
 
 #include <linux/init.h>
@@ -48,10 +46,8 @@
 #include <linux/security.h>
 #include <linux/file.h>
 #include <linux/magic.h>
-#include <linux/blkdev.h>
-#include <linux/blk-mq.h>
-#include <linux/hdreg.h>
 #include <linux/ktime.h>
+#include <linux/initrd.h>
 #include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
@@ -60,50 +56,8 @@
 /* EROFS superblock offset from fs/erofs/erofs_fs.h */
 #define INITEROFS_SB_OFFSET	1024
 
-/* Memory-backed block device major number */
-#define INITEROFS_MAJOR		0  /* dynamically allocated */
-#define INITEROFS_BLKDEV_NAME	"initerofs"
-
-/* Physical address and size of the initerofs image */
-phys_addr_t phys_initerofs_start __initdata;
-unsigned long phys_initerofs_size __initdata;
-
-/* Virtual address range after mapping */
-static void *initerofs_data;
-
-/* Flag to indicate initerofs should be used */
-static bool __initdata use_initerofs;
-
 /* Retain the memory if requested */
 static int __initdata do_retain_initerofs;
-
-/*
- * Parse the initerofs= boot parameter
- * Format: initerofs=<phys_addr>,<size>
- */
-static int __init early_initerofs(char *p)
-{
-	phys_addr_t start;
-	unsigned long size;
-	char *endp;
-
-	if (!p || !*p)
-		return 0;
-
-	start = memparse(p, &endp);
-	if (*endp == ',') {
-		size = memparse(endp + 1, NULL);
-		if (start && size) {
-			phys_initerofs_start = start;
-			phys_initerofs_size = size;
-			use_initerofs = true;
-			pr_info("initerofs: configured at 0x%llx, size 0x%lx\n",
-				(unsigned long long)start, size);
-		}
-	}
-	return 0;
-}
-early_param("initerofs", early_initerofs);
 
 static int __init retain_initerofs_param(char *str)
 {
@@ -115,55 +69,31 @@ static int __init retain_initerofs_param(char *str)
 __setup("retain_initerofs", retain_initerofs_param);
 
 /*
- * Reserve the memory region for initerofs during early boot.
- * This must be called early enough to prevent the memory from being
- * used for other purposes.
+ * Check if the initrd contains an EROFS filesystem.
+ * EROFS magic is at offset 1024 in the superblock.
  */
-void __init reserve_initerofs_mem(void)
+bool __init initerofs_detect(void)
 {
-	phys_addr_t start;
-	unsigned long size;
+	u32 magic;
 
-	if (!use_initerofs || !phys_initerofs_size)
-		return;
+	if (!initrd_start || !initrd_end)
+		return false;
 
-	/*
-	 * Round the memory region to page boundaries.
-	 * This allows us to properly map the region later.
-	 */
-	start = round_down(phys_initerofs_start, PAGE_SIZE);
-	size = phys_initerofs_size + (phys_initerofs_start - start);
-	size = round_up(size, PAGE_SIZE);
+	/* Need at least superblock offset + magic size */
+	if (initrd_end - initrd_start < INITEROFS_SB_OFFSET + sizeof(u32))
+		return false;
 
-	if (!memblock_is_region_memory(start, size)) {
-		pr_err("initerofs: 0x%llx+0x%lx is not a memory region\n",
-		       (unsigned long long)start, size);
-		use_initerofs = false;
-		return;
+	magic = le32_to_cpup((__le32 *)((void *)initrd_start + INITEROFS_SB_OFFSET));
+	if (magic == EROFS_SUPER_MAGIC_V1) {
+		pr_info("initerofs: detected EROFS format in initrd\n");
+		return true;
 	}
 
-	if (memblock_is_region_reserved(start, size)) {
-		pr_err("initerofs: 0x%llx+0x%lx overlaps reserved memory\n",
-		       (unsigned long long)start, size);
-		use_initerofs = false;
-		return;
-	}
-
-	memblock_reserve(start, size);
-	pr_info("initerofs: reserved memory 0x%llx - 0x%llx\n",
-		(unsigned long long)start, (unsigned long long)(start + size));
+	return false;
 }
 
 /*
- * Check if initerofs is enabled and ready to use.
- */
-bool __init initerofs_enabled(void)
-{
-	return use_initerofs && phys_initerofs_size > 0;
-}
-
-/*
- * Mount the EROFS image from memory as the root filesystem.
+ * Mount the EROFS image from initrd memory as the root filesystem.
  * This is called during kernel initialization to set up the early root.
  *
  * Returns 0 on success, negative error code on failure.
@@ -173,43 +103,20 @@ int __init initerofs_mount_root(void)
 	struct file *file;
 	loff_t pos = 0;
 	ssize_t written;
+	unsigned long size;
 	int err;
 	ktime_t start_time, end_time;
 	s64 elapsed_ns;
 
-	if (!initerofs_enabled())
+	if (!initrd_start || !initrd_end)
 		return -ENODEV;
+
+	size = initrd_end - initrd_start;
 
 	start_time = ktime_get();
 
-	/* Map the physical memory region */
-	initerofs_data = memremap(phys_initerofs_start, phys_initerofs_size,
-				  MEMREMAP_WB);
-	if (!initerofs_data) {
-		pr_err("initerofs: failed to map memory region\n");
-		return -ENOMEM;
-	}
-
-	/* Verify EROFS magic - located at offset 1024 */
-	if (phys_initerofs_size >= INITEROFS_SB_OFFSET + 4) {
-		u32 magic = le32_to_cpup((__le32 *)(initerofs_data + INITEROFS_SB_OFFSET));
-		if (magic != EROFS_SUPER_MAGIC_V1) {
-			pr_err("initerofs: invalid EROFS magic (got 0x%x, expected 0x%x)\n",
-			       magic, EROFS_SUPER_MAGIC_V1);
-			memunmap(initerofs_data);
-			initerofs_data = NULL;
-			return -EINVAL;
-		}
-		pr_info("initerofs: verified EROFS superblock magic\n");
-	} else {
-		pr_err("initerofs: image too small to contain EROFS superblock\n");
-		memunmap(initerofs_data);
-		initerofs_data = NULL;
-		return -EINVAL;
-	}
-
-	pr_info("initerofs: mounting EROFS from memory at 0x%llx (size %lu bytes)\n",
-		(unsigned long long)phys_initerofs_start, phys_initerofs_size);
+	pr_info("initerofs: mounting EROFS from initrd at 0x%lx (size %lu bytes)\n",
+		initrd_start, size);
 
 	/*
 	 * Mount the EROFS filesystem using file-backed mode.
@@ -222,16 +129,13 @@ int __init initerofs_mount_root(void)
 	 * 1. No decompression step - EROFS handles compression on-demand
 	 * 2. No cpio extraction - files are accessed directly from EROFS
 	 * 3. Overlayfs provides writability with copy-on-write semantics
-	 *
-	 * The memory copy overhead is minimal compared to the savings from
-	 * avoiding full cpio extraction and decompression of all files.
 	 */
 
 	/* Create temporary directory and mount point */
 	err = init_mkdir("/initerofs_tmp", 0700);
 	if (err && err != -EEXIST) {
 		pr_err("initerofs: failed to create temp directory: %d\n", err);
-		goto err_unmap;
+		return err;
 	}
 
 	err = init_mkdir("/root", 0755);
@@ -249,10 +153,10 @@ int __init initerofs_mount_root(void)
 		goto err_rmdir;
 	}
 
-	written = kernel_write(file, initerofs_data, phys_initerofs_size, &pos);
+	written = kernel_write(file, (void *)initrd_start, size, &pos);
 	fput(file);
 
-	if (written != phys_initerofs_size) {
+	if (written != size) {
 		pr_err("initerofs: failed to write image: %zd\n", written);
 		err = written < 0 ? written : -EIO;
 		goto err_unlink;
@@ -358,40 +262,13 @@ err_unlink:
 	init_unlink("/initerofs_tmp/erofs.img");
 err_rmdir:
 	init_rmdir("/initerofs_tmp");
-err_unmap:
-	memunmap(initerofs_data);
-	initerofs_data = NULL;
 	return err;
 }
 
 /*
- * Free initerofs memory after switching to the real root filesystem.
- * This is optional - the memory can be retained if needed.
+ * Check if initerofs should retain memory (via retain_initerofs param)
  */
-void __init free_initerofs_mem(void)
+bool __init initerofs_should_retain(void)
 {
-	unsigned long start, end;
-
-	if (!initerofs_enabled())
-		return;
-
-	if (do_retain_initerofs) {
-		pr_info("initerofs: retaining memory as requested\n");
-		return;
-	}
-
-	if (initerofs_data) {
-		memunmap(initerofs_data);
-		initerofs_data = NULL;
-	}
-
-	/* Free the reserved memory region */
-	start = round_down(phys_initerofs_start, PAGE_SIZE);
-	end = round_up(phys_initerofs_start + phys_initerofs_size, PAGE_SIZE);
-
-	memblock_free_late(start, end - start);
-	free_reserved_area((void *)__va(start), (void *)__va(end),
-			   POISON_FREE_INITMEM, "initerofs");
-
-	pr_info("initerofs: freed memory region\n");
+	return do_retain_initerofs;
 }
