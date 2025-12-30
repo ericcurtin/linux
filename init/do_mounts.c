@@ -27,6 +27,7 @@
 #include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
+#include "initerofs.h"
 
 int root_mountflags = MS_RDONLY | MS_SILENT;
 static char __initdata saved_root_name[64];

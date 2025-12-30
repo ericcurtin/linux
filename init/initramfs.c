@@ -23,6 +23,7 @@
 
 #include "do_mounts.h"
 #include "initramfs_internal.h"
+#include "initerofs.h"
 
 static __initdata bool csum_present;
 static __initdata u32 io_csum;
@@ -717,6 +718,16 @@ static void __init populate_initrd_image(char *err)
 
 static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
+	/* Check if initerofs should be used instead of unpacking */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initerofs_enabled()) {
+		int err = initerofs_mount_root();
+		if (!err) {
+			pr_info("initerofs: using EROFS as initial rootfs\n");
+			goto done;
+		}
+		pr_warn("initerofs: failed to mount (%d), falling back to initramfs\n", err);
+	}
+
 	/* Load the built in initramfs */
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
