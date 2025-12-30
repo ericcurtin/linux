@@ -611,6 +611,10 @@ void __init reserve_initrd_mem(void)
 	phys_addr_t start;
 	unsigned long size;
 
+	/* Reserve initerofs memory if configured */
+	if (IS_ENABLED(CONFIG_INITEROFS))
+		reserve_initerofs_mem();
+
 	/* Ignore the virtul address computed during device tree parsing */
 	initrd_start = initrd_end = 0;
 
