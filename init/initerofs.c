@@ -247,12 +247,70 @@ int __init initerofs_mount_root(void)
 		goto err_unlink;
 	}
 
+	pr_info("initerofs: EROFS mounted read-only at /root\n");
+
+	/*
+	 * Set up overlayfs to make the filesystem writable.
+	 * We layer a tmpfs (upper) on top of EROFS (lower) to allow writes.
+	 * This gives us the best of both worlds: fast EROFS for reads,
+	 * writable tmpfs for any modifications needed during boot.
+	 */
+
+	/* Create directories for overlayfs */
+	err = init_mkdir("/overlay_upper", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create overlay upper dir: %d\n", err);
+		goto err_unmount_erofs;
+	}
+
+	err = init_mkdir("/overlay_work", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create overlay work dir: %d\n", err);
+		goto err_rmdir_upper;
+	}
+
+	err = init_mkdir("/overlay_merged", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create overlay merged dir: %d\n", err);
+		goto err_rmdir_work;
+	}
+
+	/* Mount tmpfs for the upper (writable) layer */
+	err = init_mount("tmpfs", "/overlay_upper", "tmpfs", 0, "mode=0755");
+	if (err) {
+		pr_err("initerofs: failed to mount tmpfs for upper layer: %d\n", err);
+		goto err_rmdir_merged;
+	}
+
+	/* Create work directory inside tmpfs */
+	err = init_mkdir("/overlay_upper/work", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create work subdir: %d\n", err);
+		goto err_unmount_tmpfs;
+	}
+
+	err = init_mkdir("/overlay_upper/upper", 0755);
+	if (err && err != -EEXIST) {
+		pr_err("initerofs: failed to create upper subdir: %d\n", err);
+		goto err_unmount_tmpfs;
+	}
+
+	/* Mount overlayfs combining EROFS (lower) and tmpfs (upper) */
+	err = init_mount("overlay", "/overlay_merged", "overlay", 0,
+			 "lowerdir=/root,upperdir=/overlay_upper/upper,workdir=/overlay_upper/work");
+	if (err) {
+		pr_err("initerofs: failed to mount overlayfs: %d\n", err);
+		goto err_unmount_tmpfs;
+	}
+
+	pr_info("initerofs: overlayfs mounted, filesystem is now writable\n");
+
 	/* Clean up temp file - it's no longer needed after mount */
 	init_unlink("/initerofs_tmp/erofs.img");
 	init_rmdir("/initerofs_tmp");
 
-	/* Move mount to root */
-	init_chdir("/root");
+	/* Move overlayfs mount to root */
+	init_chdir("/overlay_merged");
 	err = init_mount(".", "/", NULL, MS_MOVE, NULL);
 	if (err) {
 		pr_err("initerofs: failed to move mount: %d\n", err);
@@ -260,8 +318,19 @@ int __init initerofs_mount_root(void)
 	}
 	init_chroot(".");
 
-	pr_info("initerofs: successfully mounted EROFS as root filesystem\n");
+	pr_info("initerofs: successfully mounted EROFS+overlayfs as writable root filesystem\n");
 	return 0;
+
+err_unmount_tmpfs:
+	init_umount("/overlay_upper", 0);
+err_rmdir_merged:
+	init_rmdir("/overlay_merged");
+err_rmdir_work:
+	init_rmdir("/overlay_work");
+err_rmdir_upper:
+	init_rmdir("/overlay_upper");
+err_unmount_erofs:
+	init_umount("/root", 0);
 
 err_unlink:
 	init_unlink("/initerofs_tmp/erofs.img");

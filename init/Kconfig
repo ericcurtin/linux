@@ -1478,6 +1478,8 @@ endif
 config INITEROFS
 	bool "EROFS-backed early root filesystem (initerofs)"
 	depends on EROFS_FS=y
+	depends on OVERLAY_FS=y
+	depends on TMPFS=y
 	help
 	  This option enables support for using an EROFS (Enhanced Read-Only
 	  File System) image directly from memory as the early root filesystem,
@@ -1491,7 +1493,7 @@ config INITEROFS
 	  - Faster boot: No decompression or extraction step is needed
 	  - Lower memory usage: No duplicate data (archive + extracted files)
 	  - On-demand decompression: EROFS supports transparent compression
-	  - Read-only optimized: EROFS is designed for read-only access
+	  - Writable via overlayfs: tmpfs upper layer allows modifications
 
 	  The bootloader must load the EROFS image to a memory region and pass
 	  the physical address and size to the kernel via the boot parameter:
@@ -1499,9 +1501,8 @@ config INITEROFS
 
 	  For example: initerofs=0x10000000,0x1000000
 
-	  Note: This requires EROFS to be built into the kernel (not as a
-	  module) since it's needed during early boot before modules can be
-	  loaded.
+	  Note: This requires EROFS, overlayfs, and tmpfs to be built into the
+	  kernel (not as modules) since they're needed during early boot.
 
 	  If unsure, say N.
 

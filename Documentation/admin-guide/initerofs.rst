@@ -146,6 +146,19 @@ Use Cases
 Limitations
 ===========
 
-1. **Read-Only**: EROFS is read-only, unlike tmpfs-based initramfs
-2. **Bootloader Support**: Requires bootloader to load EROFS image
-3. **No Legacy initrd**: Does not use RAM disk logic
+1. **Bootloader Support**: Requires bootloader to load EROFS image
+2. **No Legacy initrd**: Does not use RAM disk logic
+
+Writable Filesystem via Overlayfs
+=================================
+
+initerofs automatically sets up overlayfs to make the root filesystem writable.
+The EROFS image serves as the read-only lower layer, while a tmpfs provides the
+writable upper layer. This gives the best of both worlds:
+
+- **Fast reads**: Files are read directly from the compressed EROFS image
+- **Writable**: Any modifications are stored in the tmpfs upper layer
+- **Copy-on-write**: Modified files are copied to tmpfs only when written
+
+This approach is similar to how live CDs work, where the base system is read-only
+but modifications are allowed via overlayfs.
