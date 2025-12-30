@@ -164,7 +164,7 @@ int __init initerofs_mount_root(void)
 
 	/* Mount EROFS from the backing file */
 	err = init_mount("/initerofs_tmp/erofs.img", "/root", "erofs",
-			 MS_RDONLY, "source=/initerofs_tmp/erofs.img");
+			 MS_RDONLY, NULL);
 	if (err) {
 		pr_err("initerofs: failed to mount EROFS: %d\n", err);
 		goto err_unlink;
