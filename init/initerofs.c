@@ -41,10 +41,14 @@
 #include <linux/kstrtox.h>
 #include <linux/security.h>
 #include <linux/file.h>
+#include <linux/magic.h>
 #include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
 #include "initerofs.h"
+
+/* EROFS superblock offset from fs/erofs/erofs_fs.h */
+#define INITEROFS_SB_OFFSET	1024
 
 /* Physical address and size of the initerofs image */
 phys_addr_t phys_initerofs_start __initdata;
@@ -169,11 +173,11 @@ int __init initerofs_mount_root(void)
 	}
 
 	/* Verify EROFS magic - located at offset 1024 */
-	if (phys_initerofs_size >= 1024 + 4) {
-		u32 magic = le32_to_cpup((__le32 *)(initerofs_data + 1024));
-		if (magic != 0xe0f5e1e2) {  /* EROFS_SUPER_MAGIC_V1 */
-			pr_err("initerofs: invalid EROFS magic (got 0x%x, expected 0xe0f5e1e2)\n",
-			       magic);
+	if (phys_initerofs_size >= INITEROFS_SB_OFFSET + 4) {
+		u32 magic = le32_to_cpup((__le32 *)(initerofs_data + INITEROFS_SB_OFFSET));
+		if (magic != EROFS_SUPER_MAGIC_V1) {
+			pr_err("initerofs: invalid EROFS magic (got 0x%x, expected 0x%x)\n",
+			       magic, EROFS_SUPER_MAGIC_V1);
 			memunmap(initerofs_data);
 			initerofs_data = NULL;
 			return -EINVAL;
@@ -287,9 +291,7 @@ void __init free_initerofs_mem(void)
 	start = round_down(phys_initerofs_start, PAGE_SIZE);
 	end = round_up(phys_initerofs_start + phys_initerofs_size, PAGE_SIZE);
 
-#ifdef CONFIG_ARCH_KEEP_MEMBLOCK
-	memblock_free((void *)__va(start), end - start);
-#endif
+	memblock_free_late(start, end - start);
 	free_reserved_area((void *)__va(start), (void *)__va(end),
 			   POISON_FREE_INITMEM, "initerofs");
 
