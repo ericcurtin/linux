@@ -23,6 +23,7 @@
 
 #include "do_mounts.h"
 #include "initramfs_internal.h"
+#include "initerofs.h"
 
 static __initdata bool csum_present;
 static __initdata u32 io_csum;
@@ -725,6 +726,26 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
 
+	/*
+	 * Check if the initramfs is in EROFS format. If so, mount it directly
+	 * instead of unpacking as cpio. This provides significant boot time
+	 * and memory savings.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initerofs_detect()) {
+		int ret = initerofs_mount_root();
+
+		if (!ret) {
+			pr_info("initerofs: using EROFS as initial rootfs\n");
+			/*
+			 * Do NOT free initramfs memory - the memory-backed block
+			 * device reads directly from it. The memory must remain
+			 * available for the entire system lifetime.
+			 */
+			goto done;
+		}
+		pr_warn("initerofs: mount failed (%d), trying cpio unpack\n", ret);
+	}
+
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
 	else
@@ -739,9 +760,6 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 #endif
 	}
 
-done:
-	security_initramfs_populated();
-
 	/*
 	 * If the initrd region is overlapped with crashkernel reserved region,
 	 * free only memory that is not part of crashkernel region.
@@ -754,6 +772,9 @@ done:
 		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
 			pr_err("Failed to create initrd sysfs file");
 	}
+
+done:
+	security_initramfs_populated();
 	initrd_start = 0;
 	initrd_end = 0;
 
@@ -781,6 +802,22 @@ EXPORT_SYMBOL_GPL(wait_for_initramfs);
 
 static int __init populate_rootfs(void)
 {
+	/*
+	 * Check for EROFS-based initramfs synchronously BEFORE scheduling
+	 * the async task. This ensures we run after all fs_initcalls
+	 * have completed, so EROFS is definitely registered.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initrd_start &&
+	    !IS_ENABLED(CONFIG_INITRAMFS_FORCE) && initerofs_detect()) {
+		if (initerofs_mount_root() == 0) {
+			pr_info("initerofs: using EROFS as initial rootfs\n");
+			security_initramfs_populated();
+			usermodehelper_enable();
+			return 0;
+		}
+		pr_warn("initerofs: mount failed, falling back to cpio\n");
+	}
+
 	initramfs_cookie = async_schedule_domain(do_populate_rootfs, NULL,
 						 &initramfs_domain);
 	usermodehelper_enable();
