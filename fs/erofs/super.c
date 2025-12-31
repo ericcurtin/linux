@@ -1062,7 +1062,16 @@ const struct super_operations erofs_sops = {
 	.show_options = erofs_show_options,
 };
 
+/*
+ * Use fs_initcall for built-in so EROFS registers before rootfs_initcall.
+ * This allows initerofs to mount EROFS directly from initramfs memory.
+ * For modular builds, module_init is needed (which won't trigger fs_initcall).
+ */
+#ifdef MODULE
 module_init(erofs_module_init);
+#else
+fs_initcall(erofs_module_init);
+#endif
 module_exit(erofs_module_exit);
 
 MODULE_DESCRIPTION("Enhanced ROM File System");
