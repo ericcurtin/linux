@@ -13,6 +13,7 @@
 #include <linux/highmem.h>
 #include <linux/initrd.h>
 #include <linux/init_syscalls.h>
+#include <linux/stat.h>
 
 #include "initerofs.h"
 #include "do_mounts.h"
@@ -24,7 +25,6 @@ static int initerofs_major;
 static struct gendisk *initerofs_disk;
 static void *initerofs_data;
 static unsigned long initerofs_size;
-static int bio_count;
 
 /*
  * Handle a bio by copying data directly from the initrd memory region.
@@ -37,15 +37,9 @@ static void initerofs_submit_bio(struct bio *bio)
 	struct bvec_iter iter;
 	sector_t sector = bio->bi_iter.bi_sector;
 	unsigned long offset;
-	int this_bio = ++bio_count;
-
-	pr_info("initerofs: submit_bio #%d op=%d sector=%llu size=%u\n",
-		this_bio, bio_op(bio), (unsigned long long)sector,
-		bio->bi_iter.bi_size);
 
 	/* We only support reads */
 	if (bio_op(bio) != REQ_OP_READ) {
-		pr_err("initerofs: bio #%d rejected (not read)\n", this_bio);
 		bio_io_error(bio);
 		return;
 	}
@@ -58,8 +52,6 @@ static void initerofs_submit_bio(struct bio *bio)
 
 		/* Bounds check */
 		if (offset + len > initerofs_size) {
-			pr_err("initerofs: bio #%d out of bounds offset=%lu len=%u size=%lu\n",
-			       this_bio, offset, len, initerofs_size);
 			bio_io_error(bio);
 			return;
 		}
@@ -72,7 +64,6 @@ static void initerofs_submit_bio(struct bio *bio)
 		sector += len >> 9;
 	}
 
-	pr_info("initerofs: bio #%d completed\n", this_bio);
 	bio_endio(bio);
 }
 
@@ -101,25 +92,17 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
 	initerofs_data = data;
 	initerofs_size = size;
 
-	pr_info("initerofs: registering block device...\n");
-
 	/* Register block device major number */
 	initerofs_major = register_blkdev(0, INITEROFS_BLKDEV_NAME);
-	if (initerofs_major < 0) {
-		pr_err("initerofs: failed to register block device\n");
+	if (initerofs_major < 0)
 		return NULL;
-	}
-	pr_info("initerofs: registered major %d\n", initerofs_major);
 
 	/* Allocate and configure the gendisk */
-	pr_info("initerofs: allocating disk...\n");
 	initerofs_disk = blk_alloc_disk(&lim, NUMA_NO_NODE);
 	if (IS_ERR(initerofs_disk)) {
-		pr_err("initerofs: failed to allocate disk\n");
 		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
 		return NULL;
 	}
-	pr_info("initerofs: disk allocated\n");
 
 	initerofs_disk->major = initerofs_major;
 	initerofs_disk->first_minor = 0;
@@ -135,18 +118,17 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
 	set_disk_ro(initerofs_disk, true);
 
 	/* Add the disk to the system */
-	pr_info("initerofs: adding disk...\n");
 	err = add_disk(initerofs_disk);
 	if (err) {
-		pr_err("initerofs: failed to add disk: %d\n", err);
+		pr_err("initerofs: add_disk failed: %d\n", err);
 		put_disk(initerofs_disk);
 		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
 		return NULL;
 	}
-	pr_info("initerofs: disk added\n");
+
+	pr_info("initerofs: block device registered, major=%d\n", initerofs_major);
 
 	/* Create /dev directory if it doesn't exist */
-	pr_info("initerofs: creating /dev directory...\n");
 	err = init_mkdir("/dev", 0755);
 	if (err && err != -EEXIST) {
 		pr_err("initerofs: failed to create /dev: %d\n", err);
@@ -155,22 +137,32 @@ char * __init initerofs_blkdev_create(void *data, unsigned long size)
 		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
 		return NULL;
 	}
-	pr_info("initerofs: /dev exists\n");
 
 	/* Create the device node */
-	pr_info("initerofs: creating device node...\n");
 	err = create_dev("/dev/" INITEROFS_BLKDEV_NAME,
 			 MKDEV(initerofs_major, 0));
 	if (err) {
-		pr_err("initerofs: failed to create device node: %d\n", err);
+		pr_err("initerofs: create_dev failed: %d\n", err);
 		del_gendisk(initerofs_disk);
 		put_disk(initerofs_disk);
 		unregister_blkdev(initerofs_major, INITEROFS_BLKDEV_NAME);
 		return NULL;
 	}
 
-	pr_info("initerofs: created /dev/%s (major %d, %lu bytes)\n",
-		INITEROFS_BLKDEV_NAME, initerofs_major, size);
+	pr_info("initerofs: device node /dev/initerofs created (major %d, minor 0)\n",
+		initerofs_major);
+
+	/* Verify the device node is accessible */
+	{
+		struct kstat stat;
+		int stat_err = init_stat("/dev/" INITEROFS_BLKDEV_NAME, &stat, 0);
+		if (stat_err) {
+			pr_err("initerofs: device node stat failed: %d\n", stat_err);
+		} else {
+			pr_info("initerofs: device node verified: mode=%o rdev=%u:%u\n",
+				stat.mode, MAJOR(stat.rdev), MINOR(stat.rdev));
+		}
+	}
 
 	return "/dev/" INITEROFS_BLKDEV_NAME;
 }

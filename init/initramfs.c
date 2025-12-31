@@ -801,6 +801,22 @@ EXPORT_SYMBOL_GPL(wait_for_initramfs);
 
 static int __init populate_rootfs(void)
 {
+	/*
+	 * Check for EROFS-based initrd synchronously BEFORE scheduling
+	 * the async task. This ensures we run after all fs_initcalls
+	 * have completed, so EROFS is definitely registered.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initrd_start &&
+	    !IS_ENABLED(CONFIG_INITRAMFS_FORCE) && initerofs_detect()) {
+		if (initerofs_mount_root() == 0) {
+			pr_info("initerofs: using EROFS as initial rootfs\n");
+			security_initramfs_populated();
+			usermodehelper_enable();
+			return 0;
+		}
+		pr_warn("initerofs: mount failed, falling back to cpio\n");
+	}
+
 	initramfs_cookie = async_schedule_domain(do_populate_rootfs, NULL,
 						 &initramfs_domain);
 	usermodehelper_enable();

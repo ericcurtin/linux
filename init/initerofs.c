@@ -48,9 +48,6 @@
 #include <linux/magic.h>
 #include <linux/ktime.h>
 #include <linux/initrd.h>
-#include <linux/delay.h>
-#include <linux/jiffies.h>
-#include <linux/sched.h>
 #include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
@@ -146,19 +143,22 @@ int __init initerofs_mount_root(void)
 		goto err_blkdev;
 	}
 
-	/*
-	 * Wait briefly to allow filesystem initcalls to complete.
-	 * The async populate_rootfs task may run before fs_initcall completes,
-	 * so EROFS might not be registered yet. Yielding the CPU allows the
-	 * kernel init thread to continue with initcalls.
-	 */
-	pr_info("initerofs: yielding to allow fs initcalls to complete...\n");
-	schedule_timeout_interruptible(msecs_to_jiffies(50));
+	/* Verify EROFS filesystem is registered (should be at fs_initcall, before rootfs_initcall) */
+	{
+		struct file_system_type *fs_type = get_fs_type("erofs");
+		if (fs_type) {
+			put_filesystem(fs_type);
+			pr_info("initerofs: EROFS filesystem available\n");
+		} else {
+			pr_err("initerofs: EROFS filesystem not registered\n");
+			err = -ENODEV;
+			goto err_blkdev;
+		}
+	}
 
 	/* Mount EROFS from the memory-backed block device */
-	pr_info("initerofs: calling init_mount(%s, /root, erofs)...\n", blkdev_path);
+	pr_info("initerofs: attempting mount from '%s' to '/root'\n", blkdev_path);
 	err = init_mount(blkdev_path, "/root", "erofs", MS_RDONLY, NULL);
-	pr_info("initerofs: init_mount returned %d\n", err);
 	if (err) {
 		pr_err("initerofs: failed to mount EROFS from %s: %d\n",
 		       blkdev_path, err);
