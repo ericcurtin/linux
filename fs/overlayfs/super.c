@@ -1625,5 +1625,13 @@ static void __exit ovl_exit(void)
 	kmem_cache_destroy(ovl_inode_cachep);
 }
 
+/*
+ * Use fs_initcall for built-in so overlayfs registers before rootfs_initcall.
+ * This allows initerofs to create a writable overlay over EROFS.
+ */
+#ifdef MODULE
 module_init(ovl_init);
+#else
+fs_initcall(ovl_init);
+#endif
 module_exit(ovl_exit);

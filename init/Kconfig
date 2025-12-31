@@ -1475,6 +1475,38 @@ source "usr/Kconfig"
 
 endif
 
+config INITEROFS
+	bool "EROFS-backed early root filesystem (initerofs)"
+	depends on EROFS_FS=y
+	depends on OVERLAY_FS=y
+	depends on TMPFS=y
+	help
+	  This option enables support for using an EROFS (Enhanced Read-Only
+	  File System) image directly from memory as the early root filesystem,
+	  without the need to unpack a cpio archive like traditional initramfs.
+
+	  When enabled, the kernel automatically detects if the initrd is in
+	  EROFS format (by checking the magic number) and mounts it directly
+	  instead of unpacking as cpio. This provides several benefits:
+
+	  - Faster boot: No decompression or extraction step is needed
+	  - Lower memory usage: No duplicate data (archive + extracted files)
+	  - On-demand decompression: EROFS supports transparent compression
+	  - Writable via overlayfs: tmpfs upper layer allows modifications
+
+	  To use initerofs:
+	  1. Create EROFS image: mkfs.erofs -zlz4 initramfs.img rootfs/
+	  2. Use this image as your initrd (bootloader loads it normally)
+	  3. The kernel auto-detects EROFS and mounts directly
+
+	  No special kernel parameters are required - just use the EROFS
+	  image as your initrd and the kernel handles the rest.
+
+	  Note: This requires EROFS, overlayfs, and tmpfs to be built into the
+	  kernel (not as modules) since they're needed during early boot.
+
+	  If unsure, say N.
+
 config BOOT_CONFIG
 	bool "Boot config support"
 	select BLK_DEV_INITRD if !BOOT_CONFIG_EMBED
