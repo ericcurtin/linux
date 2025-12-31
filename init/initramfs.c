@@ -735,9 +735,11 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 		int ret = initerofs_mount_root();
 		if (!ret) {
 			pr_info("initerofs: using EROFS as initial rootfs\n");
-			/* Memory is handled by initerofs, skip normal free */
-			if (!initerofs_should_retain() && !kexec_free_initrd())
-				free_initrd_mem(initrd_start, initrd_end);
+			/*
+			 * Do NOT free initrd memory - the memory-backed block
+			 * device reads directly from it. The memory must remain
+			 * available for the entire system lifetime.
+			 */
 			goto done;
 		}
 		pr_warn("initerofs: mount failed (%d), trying cpio unpack\n", ret);
