@@ -143,20 +143,6 @@ int __init initerofs_mount_root(void)
 		goto err_blkdev;
 	}
 
-	/* Verify EROFS filesystem is registered (at fs_initcall, before rootfs_initcall) */
-	{
-		struct file_system_type *fs_type = get_fs_type("erofs");
-
-		if (fs_type) {
-			put_filesystem(fs_type);
-			pr_info("initerofs: EROFS filesystem available\n");
-		} else {
-			pr_err("initerofs: EROFS filesystem not registered\n");
-			err = -ENODEV;
-			goto err_blkdev;
-		}
-	}
-
 	/* Mount EROFS from the memory-backed block device */
 	pr_info("initerofs: attempting mount from '%s' to '/root'\n", blkdev_path);
 	err = init_mount(blkdev_path, "/root", "erofs", MS_RDONLY, NULL);
