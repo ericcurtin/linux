@@ -1,0 +1,335 @@
+name: Boot Time Comparison (initramfs vs initerofs)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  boot-time-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            qemu_pkg: qemu-system-x86
+            qemu_bin: qemu-system-x86_64
+            qemu_args: "-M q35 -cpu max -smp 2 -m 2G -nic none"
+            kernel_arch: x86
+            kernel_target: bzImage
+            kernel_image: arch/x86/boot/bzImage
+            defconfig: defconfig
+            console: ttyS0
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            qemu_pkg: qemu-system-arm
+            qemu_bin: qemu-system-aarch64
+            qemu_args: "-M virt -cpu cortex-a72 -smp 2 -m 2G -nic none"
+            kernel_arch: arm64
+            kernel_target: Image
+            kernel_image: arch/arm64/boot/Image
+            defconfig: defconfig
+            console: ttyAMA0
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc kmod cpio flex bison libelf-dev libssl-dev \
+            ${{ matrix.qemu_pkg }} qemu-utils \
+            lz4 erofs-utils binutils \
+            python3 dwarves zstd \
+            libncurses-dev pkg-config rsync
+
+      - name: Build kernel with initramfs support (LZ4)
+        run: |
+          make mrproper
+          make ARCH=${{ matrix.kernel_arch }} ${{ matrix.defconfig }}
+
+          ./scripts/config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --enable CONFIG_RD_LZ4
+          ./scripts/config --enable CONFIG_PRINTK_TIME
+          ./scripts/config --enable CONFIG_SERIAL_8250
+          ./scripts/config --enable CONFIG_SERIAL_8250_CONSOLE
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO
+          ./scripts/config --enable CONFIG_VIRTIO_PCI
+          ./scripts/config --enable CONFIG_VIRTIO_MMIO
+          ./scripts/config --enable CONFIG_VIRTIO_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO_BLK
+          ./scripts/config --enable CONFIG_VIRTIO_NET
+          ./scripts/config --enable CONFIG_HW_RANDOM_VIRTIO
+          ./scripts/config --enable CONFIG_DEVTMPFS
+          ./scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --enable CONFIG_TMPFS
+          ./scripts/config --enable CONFIG_PROC_FS
+          ./scripts/config --enable CONFIG_SYSFS
+          ./scripts/config --enable CONFIG_EXT4_FS
+          ./scripts/config --enable CONFIG_BLOCK
+          ./scripts/config --enable CONFIG_LZ4_DECOMPRESS
+          ./scripts/config --disable CONFIG_INITEROFS
+
+          make ARCH=${{ matrix.kernel_arch }} olddefconfig
+          make ARCH=${{ matrix.kernel_arch }} -j$(nproc) ${{ matrix.kernel_target }} modules
+
+          # Install modules for dracut
+          make ARCH=${{ matrix.kernel_arch }} INSTALL_MOD_PATH=/tmp/kmod modules_install
+          KVER=$(make ARCH=${{ matrix.kernel_arch }} kernelrelease)
+          echo "KVER=${KVER}" >> "$GITHUB_ENV"
+          echo "Kernel version: ${KVER}"
+
+          cp ${{ matrix.kernel_image }} /tmp/vmlinuz-initramfs
+
+      - name: Build kernel with initerofs support (LZ4)
+        run: |
+          make mrproper
+          make ARCH=${{ matrix.kernel_arch }} ${{ matrix.defconfig }}
+
+          ./scripts/config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --enable CONFIG_RD_LZ4
+          ./scripts/config --enable CONFIG_PRINTK_TIME
+          ./scripts/config --enable CONFIG_SERIAL_8250
+          ./scripts/config --enable CONFIG_SERIAL_8250_CONSOLE
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO
+          ./scripts/config --enable CONFIG_VIRTIO_PCI
+          ./scripts/config --enable CONFIG_VIRTIO_MMIO
+          ./scripts/config --enable CONFIG_VIRTIO_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO_BLK
+          ./scripts/config --enable CONFIG_VIRTIO_NET
+          ./scripts/config --enable CONFIG_HW_RANDOM_VIRTIO
+          ./scripts/config --enable CONFIG_DEVTMPFS
+          ./scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --enable CONFIG_TMPFS
+          ./scripts/config --enable CONFIG_PROC_FS
+          ./scripts/config --enable CONFIG_SYSFS
+          ./scripts/config --enable CONFIG_EXT4_FS
+          ./scripts/config --enable CONFIG_BLOCK
+          ./scripts/config --enable CONFIG_EROFS_FS
+          ./scripts/config --enable CONFIG_EROFS_FS_ZIP
+          ./scripts/config --enable CONFIG_EROFS_FS_BACKED_BY_FILE
+          ./scripts/config --enable CONFIG_LZ4_DECOMPRESS
+          ./scripts/config --enable CONFIG_INITEROFS
+
+          make ARCH=${{ matrix.kernel_arch }} olddefconfig
+          make ARCH=${{ matrix.kernel_arch }} -j$(nproc) ${{ matrix.kernel_target }}
+
+          cp ${{ matrix.kernel_image }} /tmp/vmlinuz-initerofs
+
+      - name: Generate Fedora 43 initramfs with dracut
+        run: |
+          KVER="${{ env.KVER }}"
+          echo "Generating Fedora 43 initramfs for kernel ${KVER}"
+
+          # Use Fedora 43 container with dracut to generate a typical initramfs
+          docker run --rm --privileged \
+            -v /tmp/kmod/lib/modules/${KVER}:/lib/modules/${KVER}:ro \
+            -v /tmp:/output \
+            -e KVER="${KVER}" \
+            fedora:43 bash -c '
+              dnf install -y dracut systemd lvm2 cryptsetup bash coreutils \
+                util-linux kmod
+              dracut --force --no-hostonly \
+                --kver "$KVER" \
+                --no-early-microcode \
+                /output/fedora-initrd.img "$KVER"
+              chmod 644 /output/fedora-initrd.img
+              echo "Dracut initramfs generated successfully"
+              ls -lh /output/fedora-initrd.img
+            '
+
+          echo "Dracut image info:"
+          file /tmp/fedora-initrd.img
+          ls -lh /tmp/fedora-initrd.img
+
+          # Extract the dracut initramfs
+          ROOTFS=/tmp/rootfs
+          sudo mkdir -p "$ROOTFS"
+          cd "$ROOTFS"
+
+          # Detect compression and extract
+          FTYPE=$(file /tmp/fedora-initrd.img)
+          echo "Image type: $FTYPE"
+
+          if echo "$FTYPE" | grep -qi "zstandard"; then
+            sudo bash -c "zstdcat /tmp/fedora-initrd.img | cpio -idm 2>/dev/null"
+          elif echo "$FTYPE" | grep -qi "gzip"; then
+            sudo bash -c "zcat /tmp/fedora-initrd.img | cpio -idm 2>/dev/null"
+          elif echo "$FTYPE" | grep -qi "xz"; then
+            sudo bash -c "xzcat /tmp/fedora-initrd.img | cpio -idm 2>/dev/null"
+          elif echo "$FTYPE" | grep -qi "lz4"; then
+            sudo bash -c "lz4cat /tmp/fedora-initrd.img | cpio -idm 2>/dev/null"
+          else
+            sudo bash -c "cpio -idm < /tmp/fedora-initrd.img 2>/dev/null"
+          fi
+
+          echo "Extracted rootfs contents:"
+          ls -la "$ROOTFS"
+          echo "Total rootfs size: $(sudo du -sh $ROOTFS | cut -f1)"
+
+          # Add boot time measurement script
+          sudo tee "$ROOTFS/init.sh" > /dev/null << 'INITEOF'
+          #!/bin/sh
+          mount -t proc proc /proc 2>/dev/null
+          mount -t sysfs sysfs /sys 2>/dev/null
+          mount -t devtmpfs devtmpfs /dev 2>/dev/null
+          read -r uptime _ < /proc/uptime
+          echo "BOOT_TIME_MARKER: ${uptime} seconds"
+          sync
+          echo o > /proc/sysrq-trigger
+          sleep 5
+          INITEOF
+          # Remove leading whitespace from heredoc
+          sudo sed -i 's/^          //' "$ROOTFS/init.sh"
+          sudo chmod +x "$ROOTFS/init.sh"
+
+          # -- Build LZ4-compressed initramfs (cpio archive) --
+          echo "Building LZ4-compressed initramfs (cpio)..."
+          (cd "$ROOTFS" && sudo find . -print0 | sudo cpio --null -o -H newc 2>/dev/null) | \
+            lz4 -l -9 > /tmp/initramfs.img.lz4
+          echo "initramfs cpio+lz4 size: $(stat -c%s /tmp/initramfs.img.lz4) bytes"
+          ls -lh /tmp/initramfs.img.lz4
+
+          # -- Build LZ4-compressed EROFS image for initerofs --
+          echo "Building LZ4-compressed EROFS image..."
+          sudo mkfs.erofs -zlz4 /tmp/initramfs.erofs "$ROOTFS"
+          echo "initerofs erofs size: $(stat -c%s /tmp/initramfs.erofs) bytes"
+          ls -lh /tmp/initramfs.erofs
+
+      - name: Boot with initramfs and measure time
+        id: boot_initramfs
+        run: |
+          echo "=== Booting with initramfs (LZ4 cpio) ==="
+
+          BOOT_TIMES=""
+          RUNS=5
+
+          for i in $(seq 1 $RUNS); do
+            echo "--- initramfs run $i of $RUNS ---"
+
+            timeout 60 ${{ matrix.qemu_bin }} \
+              ${{ matrix.qemu_args }} \
+              -kernel /tmp/vmlinuz-initramfs \
+              -initrd /tmp/initramfs.img.lz4 \
+              -append "console=${{ matrix.console }} quiet loglevel=3 printk.time=1 rdinit=/init.sh" \
+              -nographic \
+              -no-reboot 2>&1 | tee /tmp/boot_initramfs_${i}.log || true
+
+            BTIME=$(grep "BOOT_TIME_MARKER:" /tmp/boot_initramfs_${i}.log | \
+                    head -1 | sed 's/.*BOOT_TIME_MARKER: \([0-9.]*\).*/\1/')
+
+            if [ -z "$BTIME" ]; then
+              echo "ERROR: Failed to extract boot time from run $i"
+              cat /tmp/boot_initramfs_${i}.log
+              exit 1
+            fi
+
+            echo "initramfs run $i boot time: ${BTIME}s"
+            BOOT_TIMES="${BOOT_TIMES} ${BTIME}"
+          done
+
+          # Calculate median boot time using python3
+          MEDIAN=$(echo "$BOOT_TIMES" | python3 -c "
+          import sys, statistics
+          times = [float(x) for x in sys.stdin.read().split()]
+          print(f'{statistics.median(times):.6f}')
+          ")
+
+          echo "initramfs median boot time: ${MEDIAN}s (from runs:${BOOT_TIMES})"
+          echo "boot_time=${MEDIAN}" >> "$GITHUB_OUTPUT"
+
+      - name: Boot with initerofs and measure time
+        id: boot_initerofs
+        run: |
+          echo "=== Booting with initerofs (EROFS + LZ4) ==="
+
+          BOOT_TIMES=""
+          RUNS=5
+
+          for i in $(seq 1 $RUNS); do
+            echo "--- initerofs run $i of $RUNS ---"
+
+            timeout 60 ${{ matrix.qemu_bin }} \
+              ${{ matrix.qemu_args }} \
+              -kernel /tmp/vmlinuz-initerofs \
+              -initrd /tmp/initramfs.erofs \
+              -append "console=${{ matrix.console }} quiet loglevel=3 printk.time=1 init=/init.sh" \
+              -nographic \
+              -no-reboot 2>&1 | tee /tmp/boot_initerofs_${i}.log || true
+
+            BTIME=$(grep "BOOT_TIME_MARKER:" /tmp/boot_initerofs_${i}.log | \
+                    head -1 | sed 's/.*BOOT_TIME_MARKER: \([0-9.]*\).*/\1/')
+
+            if [ -z "$BTIME" ]; then
+              echo "ERROR: Failed to extract boot time from run $i"
+              cat /tmp/boot_initerofs_${i}.log
+              exit 1
+            fi
+
+            echo "initerofs run $i boot time: ${BTIME}s"
+            BOOT_TIMES="${BOOT_TIMES} ${BTIME}"
+          done
+
+          # Calculate median boot time using python3
+          MEDIAN=$(echo "$BOOT_TIMES" | python3 -c "
+          import sys, statistics
+          times = [float(x) for x in sys.stdin.read().split()]
+          print(f'{statistics.median(times):.6f}')
+          ")
+
+          echo "initerofs median boot time: ${MEDIAN}s (from runs:${BOOT_TIMES})"
+          echo "boot_time=${MEDIAN}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare boot times
+        run: |
+          INITRAMFS_TIME="${{ steps.boot_initramfs.outputs.boot_time }}"
+          INITEROFS_TIME="${{ steps.boot_initerofs.outputs.boot_time }}"
+
+          echo "============================================"
+          echo "       Boot Time Comparison Results"
+          echo "============================================"
+          echo "Architecture:    ${{ matrix.arch }}"
+          echo "initramfs time:  ${INITRAMFS_TIME}s"
+          echo "initerofs time:  ${INITEROFS_TIME}s"
+          echo "============================================"
+
+          python3 << PYEOF
+          import sys
+
+          initramfs = float("${INITRAMFS_TIME}")
+          initerofs = float("${INITEROFS_TIME}")
+
+          diff = initramfs - initerofs
+          if initramfs > 0:
+              pct = (diff / initramfs) * 100
+          else:
+              pct = 0
+
+          print()
+          if initerofs < initramfs:
+              print(f"✅ PASS: initerofs is {diff:.6f}s ({pct:.2f}%) FASTER than initramfs")
+              print(f"   initerofs: {initerofs:.6f}s vs initramfs: {initramfs:.6f}s")
+          elif initerofs == initramfs:
+              print(f"⚠️  PASS: initerofs and initramfs boot times are equal ({initerofs:.6f}s)")
+          else:
+              slower = initerofs - initramfs
+              if initramfs > 0:
+                  spct = (slower / initramfs) * 100
+              else:
+                  spct = 0
+              print(f"❌ FAIL: initramfs is {slower:.6f}s ({spct:.2f}%) FASTER than initerofs")
+              print(f"   initerofs: {initerofs:.6f}s vs initramfs: {initramfs:.6f}s")
+              sys.exit(1)
+          PYEOF
