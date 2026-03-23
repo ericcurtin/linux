@@ -1,0 +1,367 @@
+name: Boot Time Comparison (initramfs vs initerofs)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  boot-time-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            qemu_pkg: qemu-system-x86
+            qemu_bin: qemu-system-x86_64
+            qemu_args: "-M q35 -cpu max -smp 2 -m 2G -nic none"
+            kernel_arch: x86
+            kernel_target: bzImage
+            kernel_image: arch/x86/boot/bzImage
+            defconfig: defconfig
+            console: ttyS0
+            vda: vda
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            qemu_pkg: qemu-system-arm
+            qemu_bin: qemu-system-aarch64
+            qemu_args: "-M virt -cpu cortex-a72 -smp 2 -m 2G -nic none"
+            kernel_arch: arm64
+            kernel_target: Image
+            kernel_image: arch/arm64/boot/Image
+            defconfig: defconfig
+            console: ttyAMA0
+            vda: vda
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc kmod cpio flex bison libelf-dev libssl-dev \
+            ${{ matrix.qemu_pkg }} qemu-utils \
+            lz4 erofs-utils binutils \
+            python3 dwarves zstd \
+            libncurses-dev pkg-config rsync \
+            e2fsprogs busybox-static
+
+      - name: Build kernel with initramfs support (LZ4)
+        run: |
+          make mrproper
+          make ARCH=${{ matrix.kernel_arch }} ${{ matrix.defconfig }}
+
+          ./scripts/config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --enable CONFIG_RD_LZ4
+          ./scripts/config --enable CONFIG_PRINTK_TIME
+          ./scripts/config --enable CONFIG_SERIAL_8250
+          ./scripts/config --enable CONFIG_SERIAL_8250_CONSOLE
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO
+          ./scripts/config --enable CONFIG_VIRTIO_PCI
+          ./scripts/config --enable CONFIG_VIRTIO_MMIO
+          ./scripts/config --enable CONFIG_VIRTIO_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO_BLK
+          ./scripts/config --enable CONFIG_VIRTIO_NET
+          ./scripts/config --enable CONFIG_HW_RANDOM_VIRTIO
+          ./scripts/config --enable CONFIG_DEVTMPFS
+          ./scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --enable CONFIG_TMPFS
+          ./scripts/config --enable CONFIG_PROC_FS
+          ./scripts/config --enable CONFIG_SYSFS
+          ./scripts/config --enable CONFIG_EXT4_FS
+          ./scripts/config --enable CONFIG_BLOCK
+          ./scripts/config --enable CONFIG_LZ4_DECOMPRESS
+          ./scripts/config --disable CONFIG_INITEROFS
+
+          make ARCH=${{ matrix.kernel_arch }} olddefconfig
+          make ARCH=${{ matrix.kernel_arch }} -j$(nproc) ${{ matrix.kernel_target }}
+
+          cp ${{ matrix.kernel_image }} /tmp/vmlinuz-initramfs
+
+      - name: Build kernel with initerofs support (LZ4)
+        run: |
+          make mrproper
+          make ARCH=${{ matrix.kernel_arch }} ${{ matrix.defconfig }}
+
+          ./scripts/config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --enable CONFIG_RD_LZ4
+          ./scripts/config --enable CONFIG_PRINTK_TIME
+          ./scripts/config --enable CONFIG_SERIAL_8250
+          ./scripts/config --enable CONFIG_SERIAL_8250_CONSOLE
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011
+          ./scripts/config --enable CONFIG_SERIAL_AMBA_PL011_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO
+          ./scripts/config --enable CONFIG_VIRTIO_PCI
+          ./scripts/config --enable CONFIG_VIRTIO_MMIO
+          ./scripts/config --enable CONFIG_VIRTIO_CONSOLE
+          ./scripts/config --enable CONFIG_VIRTIO_BLK
+          ./scripts/config --enable CONFIG_VIRTIO_NET
+          ./scripts/config --enable CONFIG_HW_RANDOM_VIRTIO
+          ./scripts/config --enable CONFIG_DEVTMPFS
+          ./scripts/config --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --enable CONFIG_TMPFS
+          ./scripts/config --enable CONFIG_PROC_FS
+          ./scripts/config --enable CONFIG_SYSFS
+          ./scripts/config --enable CONFIG_EXT4_FS
+          ./scripts/config --enable CONFIG_BLOCK
+          ./scripts/config --enable CONFIG_EROFS_FS
+          ./scripts/config --enable CONFIG_EROFS_FS_ZIP
+          ./scripts/config --enable CONFIG_EROFS_FS_BACKED_BY_FILE
+          ./scripts/config --enable CONFIG_LZ4_DECOMPRESS
+          ./scripts/config --enable CONFIG_INITEROFS
+
+          make ARCH=${{ matrix.kernel_arch }} olddefconfig
+          make ARCH=${{ matrix.kernel_arch }} -j$(nproc) ${{ matrix.kernel_target }}
+
+          cp ${{ matrix.kernel_image }} /tmp/vmlinuz-initerofs
+
+      - name: Build ext4 root disk image
+        run: |
+          # Build a minimal ext4 root filesystem that both initramfs and
+          # initerofs will switch_root into.  This is the final root that
+          # the init process pivots to after early boot - the same target
+          # for both boot methods, making the comparison fair.
+          EXT4=/tmp/rootdisk.img
+          ROOTFS=/tmp/ext4root
+
+          mkdir -p "$ROOTFS"/{bin,sbin,dev,proc,sys,tmp,etc}
+
+          # Populate with busybox
+          cp /bin/busybox "$ROOTFS/bin/busybox"
+          "$ROOTFS/bin/busybox" --install -s "$ROOTFS/bin"
+          ln -sf ../bin/busybox "$ROOTFS/sbin/init"
+
+          # The init that runs inside the ext4 root: print the boot time
+          # marker (measured from kernel start via /proc/uptime) then power off.
+          cat > "$ROOTFS/sbin/init" << 'EXTINITEOF'
+          #!/bin/sh
+          mount -t proc proc /proc 2>/dev/null
+          mount -t sysfs sysfs /sys 2>/dev/null
+          mount -t devtmpfs devtmpfs /dev 2>/dev/null
+          read -r uptime _ < /proc/uptime
+          echo "BOOT_TIME_MARKER: ${uptime} seconds"
+          sync
+          echo o > /proc/sysrq-trigger
+          sleep 5
+          EXTINITEOF
+          sed -i 's/^          //' "$ROOTFS/sbin/init"
+          chmod +x "$ROOTFS/sbin/init"
+
+          # Create and format the ext4 image (64 MiB)
+          dd if=/dev/zero of="$EXT4" bs=1M count=64 status=none
+          mkfs.ext4 -q -L rootfs "$EXT4"
+
+          # Copy rootfs into the image
+          MNTDIR=/tmp/ext4mnt
+          mkdir -p "$MNTDIR"
+          sudo mount -o loop "$EXT4" "$MNTDIR"
+          sudo cp -a "$ROOTFS/." "$MNTDIR/"
+          sudo umount "$MNTDIR"
+
+          echo "ext4 root disk image: $(ls -lh $EXT4)"
+
+      - name: Build initramfs cpio+lz4 (switch_root to ext4)
+        run: |
+          # Build a minimal cpio initramfs whose /init mounts /dev/vda as
+          # ext4 and switch_roots into it.  This mirrors exactly what a
+          # real initramfs-based boot does, and is the fair comparison
+          # target for initerofs.
+          INITRD=/tmp/initramfs-rootfs
+          mkdir -p "$INITRD"/{bin,sbin,dev,proc,sys,mnt}
+
+          cp /bin/busybox "$INITRD/bin/busybox"
+          "$INITRD/bin/busybox" --install -s "$INITRD/bin"
+          ln -sf bin/busybox "$INITRD/sbin/switch_root"
+
+          cat > "$INITRD/init" << 'INITEOF'
+          #!/bin/sh
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t devtmpfs devtmpfs /dev
+
+          # Wait for the virtio-blk disk to appear
+          for i in $(seq 1 20); do
+            [ -b /dev/vda ] && break
+            sleep 0.1
+          done
+
+          mount -t ext4 /dev/vda /mnt
+          exec switch_root /mnt /sbin/init
+          INITEOF
+          chmod +x "$INITRD/init"
+
+          echo "Building LZ4-compressed initramfs cpio..."
+          (cd "$INITRD" && find . -print0 | cpio --null -o -H newc 2>/dev/null) | \
+            lz4 -l -9 > /tmp/initramfs.img.lz4
+          echo "initramfs cpio+lz4: $(ls -lh /tmp/initramfs.img.lz4)"
+
+      - name: Build initerofs EROFS image (switch_root to ext4)
+        run: |
+          # Build a minimal EROFS image whose /init mounts /dev/vda as ext4
+          # and switch_roots into it.  This is the initerofs equivalent of
+          # the cpio initramfs above: the EROFS image acts as the initramfs
+          # environment, and the final root filesystem is still ext4.
+          EROFS_ROOTFS=/tmp/erofs-rootfs
+          mkdir -p "$EROFS_ROOTFS"/{bin,sbin,dev,proc,sys,mnt}
+
+          cp /bin/busybox "$EROFS_ROOTFS/bin/busybox"
+          "$EROFS_ROOTFS/bin/busybox" --install -s "$EROFS_ROOTFS/bin"
+          ln -sf bin/busybox "$EROFS_ROOTFS/sbin/switch_root"
+
+          cat > "$EROFS_ROOTFS/init" << 'INITEOF'
+          #!/bin/sh
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t devtmpfs devtmpfs /dev
+
+          # Wait for the virtio-blk disk to appear
+          for i in $(seq 1 20); do
+            [ -b /dev/vda ] && break
+            sleep 0.1
+          done
+
+          mount -t ext4 /dev/vda /mnt
+          exec switch_root /mnt /sbin/init
+          INITEOF
+          chmod +x "$EROFS_ROOTFS/init"
+
+          echo "Building LZ4-compressed EROFS image..."
+          mkfs.erofs -zlz4 /tmp/initramfs.erofs "$EROFS_ROOTFS"
+          echo "initerofs EROFS+lz4: $(ls -lh /tmp/initramfs.erofs)"
+
+      - name: Boot with initramfs and measure time
+        id: boot_initramfs
+        run: |
+          echo "=== Booting with initramfs (LZ4 cpio) -> switch_root -> ext4 ==="
+
+          BOOT_TIMES=""
+          RUNS=5
+
+          for i in $(seq 1 $RUNS); do
+            echo "--- initramfs run $i of $RUNS ---"
+
+            timeout 60 ${{ matrix.qemu_bin }} \
+              ${{ matrix.qemu_args }} \
+              -kernel /tmp/vmlinuz-initramfs \
+              -initrd /tmp/initramfs.img.lz4 \
+              -drive file=/tmp/rootdisk.img,format=raw,if=virtio \
+              -append "console=${{ matrix.console }} quiet loglevel=3 printk.time=1 rdinit=/init" \
+              -nographic \
+              -no-reboot 2>&1 | tee /tmp/boot_initramfs_${i}.log || true
+
+            BTIME=$(grep "BOOT_TIME_MARKER:" /tmp/boot_initramfs_${i}.log | \
+                    head -1 | sed 's/.*BOOT_TIME_MARKER: \([0-9.]*\).*/\1/')
+
+            if [ -z "$BTIME" ]; then
+              echo "ERROR: Failed to extract boot time from run $i"
+              cat /tmp/boot_initramfs_${i}.log
+              exit 1
+            fi
+
+            echo "initramfs run $i boot time: ${BTIME}s"
+            BOOT_TIMES="${BOOT_TIMES} ${BTIME}"
+          done
+
+          MEDIAN=$(echo "$BOOT_TIMES" | python3 -c "
+          import sys, statistics
+          times = [float(x) for x in sys.stdin.read().split()]
+          print(f'{statistics.median(times):.6f}')
+          ")
+
+          echo "initramfs median boot time: ${MEDIAN}s (from runs:${BOOT_TIMES})"
+          echo "boot_time=${MEDIAN}" >> "$GITHUB_OUTPUT"
+
+      - name: Boot with initerofs and measure time
+        id: boot_initerofs
+        run: |
+          echo "=== Booting with initerofs (EROFS + LZ4) -> switch_root -> ext4 ==="
+
+          BOOT_TIMES=""
+          RUNS=5
+
+          for i in $(seq 1 $RUNS); do
+            echo "--- initerofs run $i of $RUNS ---"
+
+            timeout 60 ${{ matrix.qemu_bin }} \
+              ${{ matrix.qemu_args }} \
+              -kernel /tmp/vmlinuz-initerofs \
+              -initrd /tmp/initramfs.erofs \
+              -drive file=/tmp/rootdisk.img,format=raw,if=virtio \
+              -append "console=${{ matrix.console }} quiet loglevel=3 printk.time=1 rdinit=/init" \
+              -nographic \
+              -no-reboot 2>&1 | tee /tmp/boot_initerofs_${i}.log || true
+
+            BTIME=$(grep "BOOT_TIME_MARKER:" /tmp/boot_initerofs_${i}.log | \
+                    head -1 | sed 's/.*BOOT_TIME_MARKER: \([0-9.]*\).*/\1/')
+
+            if [ -z "$BTIME" ]; then
+              echo "ERROR: Failed to extract boot time from run $i"
+              cat /tmp/boot_initerofs_${i}.log
+              exit 1
+            fi
+
+            echo "initerofs run $i boot time: ${BTIME}s"
+            BOOT_TIMES="${BOOT_TIMES} ${BTIME}"
+          done
+
+          MEDIAN=$(echo "$BOOT_TIMES" | python3 -c "
+          import sys, statistics
+          times = [float(x) for x in sys.stdin.read().split()]
+          print(f'{statistics.median(times):.6f}')
+          ")
+
+          echo "initerofs median boot time: ${MEDIAN}s (from runs:${BOOT_TIMES})"
+          echo "boot_time=${MEDIAN}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare boot times
+        run: |
+          INITRAMFS_TIME="${{ steps.boot_initramfs.outputs.boot_time }}"
+          INITEROFS_TIME="${{ steps.boot_initerofs.outputs.boot_time }}"
+
+          echo "============================================"
+          echo "       Boot Time Comparison Results"
+          echo "============================================"
+          echo "Architecture:    ${{ matrix.arch }}"
+          echo "Boot path:       initramfs/initerofs -> switch_root -> ext4"
+          echo "initramfs time:  ${INITRAMFS_TIME}s"
+          echo "initerofs time:  ${INITEROFS_TIME}s"
+          echo "============================================"
+
+          python3 << PYEOF
+          import sys
+
+          initramfs = float("${INITRAMFS_TIME}")
+          initerofs = float("${INITEROFS_TIME}")
+
+          diff = initramfs - initerofs
+          if initramfs > 0:
+              pct = (diff / initramfs) * 100
+          else:
+              pct = 0
+
+          print()
+          if initerofs < initramfs:
+              print(f"PASS: initerofs is {diff:.6f}s ({pct:.2f}%) FASTER than initramfs")
+              print(f"  initerofs: {initerofs:.6f}s vs initramfs: {initramfs:.6f}s")
+          elif initerofs == initramfs:
+              print(f"PASS: initerofs and initramfs boot times are equal ({initerofs:.6f}s)")
+          else:
+              slower = initerofs - initramfs
+              if initramfs > 0:
+                  spct = (slower / initramfs) * 100
+              else:
+                  spct = 0
+              print(f"FAIL: initramfs is {slower:.6f}s ({spct:.2f}%) FASTER than initerofs")
+              print(f"  initerofs: {initerofs:.6f}s vs initramfs: {initramfs:.6f}s")
+              sys.exit(1)
+          PYEOF
