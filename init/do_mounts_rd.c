@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/fs.h>
-#include <linux/minix_fs.h>
+#include <linux/erofs_fs.h>
 #include <linux/ext2_fs.h>
-#include <linux/romfs_fs.h>
-#include <uapi/linux/cramfs_fs.h>
 #include <linux/initrd.h>
+#include <linux/minix_fs.h>
+#include <linux/romfs_fs.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/string_choices.h>
-#include <linux/slab.h>
+#include <linux/unaligned.h>
+#include <uapi/linux/cramfs_fs.h>
 
 #include "do_mounts.h"
 #include "../fs/squashfs/squashfs_fs.h"
@@ -138,6 +140,27 @@ identify_ramdisk_image(struct file *file, loff_t pos,
 	 */
 	pos = (start_block + 1) * BLOCK_SIZE;
 	kernel_read(file, buf, size, &pos);
+
+	/*
+	 * Reject EROFS images on the ramdisk path.  When CONFIG_INITEROFS=y
+	 * and an EROFS image was detected earlier in do_populate_rootfs(),
+	 * initerofs_try_mount() mounts it directly from initrd memory and
+	 * returns before rd_load_image() is ever called, so this branch is
+	 * only reached if initerofs_try_mount() failed.  In that case the
+	 * correct response is to report no usable image (-1) rather than
+	 * attempting to copy the EROFS image block-by-block into a ramdisk,
+	 * which would result in a mount failure anyway.
+	 *
+	 * BUILD_BUG_ON asserts the 512-byte buffer covers the full superblock.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS)) {
+		BUILD_BUG_ON(sizeof(struct erofs_super_block) > 512);
+		if (get_unaligned_le32(buf) == EROFS_SUPER_MAGIC_V1) {
+			pr_err("RAMDISK: EROFS image found but initerofs mount failed; cannot load via ramdisk\n");
+			nblocks = -1;
+			goto done;
+		}
+	}
 
 	/* Try minix */
 	if (minixsb->s_magic == MINIX_SUPER_MAGIC ||

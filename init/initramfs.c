@@ -20,6 +20,8 @@
 #include <linux/umh.h>
 #include <linux/security.h>
 #include <linux/overflow.h>
+#include <linux/unaligned.h>
+#include <linux/erofs_fs.h>
 
 #include "do_mounts.h"
 #include "initramfs_internal.h"
@@ -715,15 +717,59 @@ static void __init populate_initrd_image(char *err)
 }
 #endif /* CONFIG_BLK_DEV_RAM */
 
+static void __init populate_initrd_sysfs(void)
+{
+	bin_attr_initrd.size = initrd_end - initrd_start;
+	bin_attr_initrd.private = (void *)initrd_start;
+	if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
+		pr_err("Failed to create initrd sysfs file");
+}
+
+/*
+ * EROFS superblock magic is at EROFS_SUPER_OFFSET (1024) within the image.
+ * Check for this to distinguish an EROFS image from a cpio archive.
+ * Uses IS_ENABLED() so both branches remain compile-checked regardless of
+ * CONFIG_INITEROFS; the compiler eliminates the dead branch at build time.
+ */
+static bool __init is_erofs_image(const char *buf, unsigned long len)
+{
+	if (!IS_ENABLED(CONFIG_INITEROFS))
+		return false;
+
+	if (len < EROFS_SUPER_OFFSET + sizeof(__le32))
+		return false;
+
+	return get_unaligned_le32(buf + EROFS_SUPER_OFFSET) ==
+	       EROFS_SUPER_MAGIC_V1;
+}
+
 static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
 	/* Load the built in initramfs */
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+	bool erofs_initrd = false;
+
 	if (err)
 		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
 
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
+
+	if (IS_ENABLED(CONFIG_INITEROFS) &&
+	    is_erofs_image((char *)initrd_start, initrd_end - initrd_start)) {
+		pr_info("EROFS image found in initramfs region, deferring to direct memory mount\n");
+		/*
+		 * Skip populate_initrd_image() and keep initrd memory alive.
+		 * initerofs_try_mount() will mount EROFS directly from the
+		 * initrd memory region without any data copy.
+		 *
+		 * Signal to initerofs_try_mount() that detection succeeded so
+		 * it does not fire a spurious mount attempt for cpio initrds.
+		 */
+		initerofs_set_detected();
+		erofs_initrd = true;
+		goto done;
+	}
 
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
@@ -740,6 +786,33 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 	}
 
 done:
+	if (IS_ENABLED(CONFIG_INITEROFS) && erofs_initrd) {
+		/*
+		 * The initrd memory is the live backing store for the EROFS
+		 * mount that initerofs_try_mount() is about to set up.  We
+		 * must NOT free or zero it (including the kexec path which
+		 * calls memset() over the crashkernel overlap region).
+		 *
+		 * NOTE: initrd_start and initrd_end are intentionally NOT
+		 * zeroed here.  initerofs_try_mount(), called later from
+		 * initrd_load(), reads them to locate the backing store.
+		 * Any future change that zeros them on this path will break
+		 * the EROFS mount silently.
+		 *
+		 * If retain_initrd was requested, honour it so that
+		 * /sys/firmware/initrd is accessible as usual.
+		 */
+		if (do_retain_initrd && initrd_start)
+			populate_initrd_sysfs();
+		goto out;
+	}
+
+	/*
+	 * Inform the LSM that initramfs has been unpacked into rootfs.
+	 * Only called on the cpio path: the hook's semantics require that
+	 * files were actually extracted into the rootfs tmpfs.  The EROFS
+	 * path above exits early because no files are unpacked into rootfs.
+	 */
 	security_initramfs_populated();
 
 	/*
@@ -749,14 +822,12 @@ done:
 	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
 		free_initrd_mem(initrd_start, initrd_end);
 	} else if (do_retain_initrd && initrd_start) {
-		bin_attr_initrd.size = initrd_end - initrd_start;
-		bin_attr_initrd.private = (void *)initrd_start;
-		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
-			pr_err("Failed to create initrd sysfs file");
+		populate_initrd_sysfs();
 	}
 	initrd_start = 0;
 	initrd_end = 0;
 
+out:
 	init_flush_fput();
 }
 

@@ -479,9 +479,12 @@ void __init prepare_namespace(void)
 
 	initrd_load();
 
-	if (root_wait)
-		wait_for_root(saved_root_name);
-	mount_root(saved_root_name);
+	if (!IS_ENABLED(CONFIG_INITEROFS) || !initerofs_root_mounted()) {
+		if (root_wait)
+			wait_for_root(saved_root_name);
+		mount_root(saved_root_name);
+	}
+
 	devtmpfs_mount();
 
 	if (init_pivot_root(".", ".")) {

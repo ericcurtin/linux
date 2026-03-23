@@ -1489,6 +1489,32 @@ if BLK_DEV_INITRD
 
 source "usr/Kconfig"
 
+config INITEROFS
+	bool "Support EROFS filesystem image in initramfs region"
+	depends on EROFS_FS=y && EROFS_FS_BACKED_BY_FILE
+	help
+	  Allow placing an EROFS filesystem image in the initramfs memory
+	  region instead of a traditional cpio archive. The kernel will
+	  detect whether the data is an EROFS image or a standard initramfs
+	  and handle it appropriately.
+
+	  EROFS provides several advantages over cpio-based initramfs:
+	  - Already in filesystem format, avoiding decompress-reconstruct
+	  - On-demand decompression keeps data compressed until accessed
+	  - Faster boot times and reduced memory usage
+
+	  When enabled, the bootloader places an EROFS image where it would
+	  normally place the initramfs, and the kernel mounts it directly
+	  from the initrd memory using EROFS file-backed mount support.
+
+	  Note: bootconfig data (CONFIG_BOOT_CONFIG) must not be appended to
+	  an EROFS initrd image.  The kernel strips bootconfig before EROFS
+	  detection runs, so the append would corrupt the image from EROFS's
+	  perspective.  Use kernel command-line parameters instead when
+	  INITEROFS is enabled together with BOOT_CONFIG.
+
+	  If unsure, say N.
+
 endif
 
 config BOOT_CONFIG
