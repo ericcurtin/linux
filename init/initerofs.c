@@ -47,6 +47,13 @@ static u64 initerofs_len;
 static bool initerofs_detected __initdata;
 
 /*
+ * Set to true only when initerofs_try_mount() has fully completed: EROFS
+ * mounted and pivot_root done.  Used by prepare_namespace() to skip the
+ * kernel-side mount_root().  __initdata: only read during __init.
+ */
+static bool initerofs_mounted __initdata;
+
+/*
  * Read a folio from the initrd memory region.  Called by the page cache
  * when a page is not present (first access or after eviction).
  * Used by EROFS metadata reads (superblock, inodes, directory entries).
@@ -129,7 +136,7 @@ void __init initerofs_set_detected(void)
  */
 bool __init initerofs_is_mounted(void)
 {
-	return initerofs_addr != 0;
+	return initerofs_mounted;
 }
 
 /*
@@ -260,6 +267,7 @@ bool __init initerofs_try_mount(void)
 		pr_warn("INITEROFS: failed to unmount old rootfs\n");
 
 	pr_info("INITEROFS: mounted EROFS from initrd memory as rootfs.\n");
+	initerofs_mounted = true;
 	return true;
 
 fail:
