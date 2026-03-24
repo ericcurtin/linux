@@ -12614,6 +12614,12 @@ F:	fs/notify/inotify/
 F:	include/linux/inotify.h
 F:	include/uapi/linux/inotify.h
 
+INITEROFS (EROFS FROM INITRD)
+M:	Eric Curtin <eric.curtin@docker.com>
+L:	linux-kernel@vger.kernel.org
+S:	Maintained
+F:	init/initerofs.c
+
 INPUT (KEYBOARD, MOUSE, JOYSTICK, TOUCHSCREEN) DRIVERS
 M:	Dmitry Torokhov <dmitry.torokhov@gmail.com>
 L:	linux-input@vger.kernel.org
