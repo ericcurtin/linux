@@ -119,6 +119,19 @@ void __init initerofs_set_detected(void)
 	initerofs_detected = true;
 }
 
+/**
+ * initerofs_is_mounted - check if EROFS was mounted from initrd memory
+ *
+ * Returns true when initerofs_try_mount() has successfully set up the
+ * EROFS initrd as the root filesystem.  Used by prepare_namespace() to
+ * skip the kernel-side root mount when the init process on the EROFS
+ * image is responsible for mounting and switching to the final root.
+ */
+bool __init initerofs_is_mounted(void)
+{
+	return initerofs_addr != 0;
+}
+
 /*
  * Try to mount EROFS directly from the initrd memory region as the initial
  * rootfs, replacing the existing tmpfs rootfs in-place.
