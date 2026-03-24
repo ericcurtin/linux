@@ -136,10 +136,12 @@ jobs:
 
           mkdir -p "$ROOTFS"/{bin,sbin,dev,proc,sys,tmp,etc}
 
-          # Populate with busybox
+          # Populate with busybox (create relative symlinks, not absolute host paths)
           cp /bin/busybox "$ROOTFS/bin/busybox"
-          "$ROOTFS/bin/busybox" --install -s "$ROOTFS/bin"
-          ln -sf ../bin/busybox "$ROOTFS/sbin/init"
+          for applet in $("$ROOTFS/bin/busybox" --list); do
+            [ "$applet" = "busybox" ] && continue
+            ln -sf busybox "$ROOTFS/bin/$applet"
+          done
 
           # The init that runs inside the ext4 root: print the boot time
           # marker (measured from kernel start via /proc/uptime) then power off.
@@ -180,8 +182,11 @@ jobs:
           mkdir -p "$INITRD"/{bin,sbin,dev,proc,sys,mnt}
 
           cp /bin/busybox "$INITRD/bin/busybox"
-          "$INITRD/bin/busybox" --install -s "$INITRD/bin"
-          ln -sf bin/busybox "$INITRD/sbin/switch_root"
+          for applet in $("$INITRD/bin/busybox" --list); do
+            [ "$applet" = "busybox" ] && continue
+            ln -sf busybox "$INITRD/bin/$applet"
+          done
+          ln -sf ../bin/busybox "$INITRD/sbin/switch_root"
 
           cat > "$INITRD/init" << 'INITEOF'
           #!/bin/sh
@@ -215,8 +220,11 @@ jobs:
           mkdir -p "$EROFS_ROOTFS"/{bin,sbin,dev,proc,sys,mnt}
 
           cp /bin/busybox "$EROFS_ROOTFS/bin/busybox"
-          "$EROFS_ROOTFS/bin/busybox" --install -s "$EROFS_ROOTFS/bin"
-          ln -sf bin/busybox "$EROFS_ROOTFS/sbin/switch_root"
+          for applet in $("$EROFS_ROOTFS/bin/busybox" --list); do
+            [ "$applet" = "busybox" ] && continue
+            ln -sf busybox "$EROFS_ROOTFS/bin/$applet"
+          done
+          ln -sf ../bin/busybox "$EROFS_ROOTFS/sbin/switch_root"
 
           cat > "$EROFS_ROOTFS/init" << 'INITEOF'
           #!/bin/sh
