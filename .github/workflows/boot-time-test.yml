@@ -143,6 +143,8 @@ jobs:
           ./scripts/config --enable CONFIG_FHANDLE
 
           make ARCH=${{ matrix.kernel_arch }} olddefconfig
+          # No modules_install needed: dracut uses modules from the
+          # initramfs kernel build (same KVER, identical module set).
           make ARCH=${{ matrix.kernel_arch }} -j$(nproc) ${{ matrix.kernel_target }}
 
           cp ${{ matrix.kernel_image }} /tmp/vmlinuz-initerofs
@@ -177,7 +179,6 @@ jobs:
           [Install]
           WantedBy=default.target
           SVCEOF
-            sed -i "s/^          //" /etc/systemd/system/boot-time-marker.service
             systemctl enable boot-time-marker.service
 
             systemd-machine-id-setup
