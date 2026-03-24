@@ -48,6 +48,22 @@ early_param("initrd", early_initrd);
 void __init initrd_load(void)
 {
 	if (mount_initrd) {
+		/*
+		 * Try to mount EROFS directly from initrd memory.
+		 * This avoids copying the image to a ramdisk and mounts
+		 * the root filesystem in place.  The initrd memory is
+		 * kept alive as the backing store.
+		 *
+		 * Detection of the EROFS magic already happened in
+		 * do_populate_rootfs() (initramfs.c), which called
+		 * initerofs_set_detected() and skipped cpio unpacking.
+		 * initerofs_try_mount() returns false immediately if
+		 * detection did not fire, so the ramdisk path below
+		 * is taken for a normal cpio initrd.
+		 */
+		if (IS_ENABLED(CONFIG_INITEROFS) && initrd_start &&
+		    initerofs_try_mount())
+			return;
 		create_dev("/dev/ram", Root_RAM0);
 		/*
 		 * Load the initrd data into /dev/ram0.
