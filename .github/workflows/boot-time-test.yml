@@ -132,6 +132,7 @@ jobs:
           ./scripts/config --enable CONFIG_EROFS_FS_ZIP
           ./scripts/config --enable CONFIG_EROFS_FS_BACKED_BY_FILE
           ./scripts/config --enable CONFIG_LZ4_DECOMPRESS
+          ./scripts/config --enable CONFIG_OVERLAY_FS
           ./scripts/config --enable CONFIG_INITEROFS
           ./scripts/config --enable CONFIG_CGROUPS
           ./scripts/config --enable CONFIG_INOTIFY_USER
@@ -281,6 +282,28 @@ jobs:
           (cd "$ROOTFS" && sudo find . -print0 | sudo cpio --null -o -H newc 2>/dev/null) | \
             lz4 -l -9 > /tmp/initramfs.img.lz4
           echo "initramfs cpio+lz4: $(ls -lh /tmp/initramfs.img.lz4)"
+
+          # -- Prepare EROFS initramfs with overlay wrapper --
+          # EROFS is read-only, but dracut scripts need to write files
+          # (state files, udev rules, hook scripts) during early boot.
+          # Replace /init with a wrapper that layers an overlayfs (tmpfs
+          # upper + EROFS lower) before exec'ing the real systemd init.
+          sudo rm -f "$ROOTFS/init"
+          printf '%s\n' '#!/bin/sh' \
+            '# Overlay wrapper: makes read-only EROFS root writable' \
+            'mount -t proc proc /proc 2>/dev/null' \
+            'mount -t tmpfs tmpfs /overlay_work -o mode=0700' \
+            'mkdir -p /overlay_work/upper /overlay_work/work /overlay_root' \
+            'mount -t overlay overlay /overlay_root -o lowerdir=/,upperdir=/overlay_work/upper,workdir=/overlay_work/work' \
+            'mount --move /proc /overlay_root/proc 2>/dev/null' \
+            'mount --move /overlay_work /overlay_root/overlay_work 2>/dev/null' \
+            'cd /overlay_root' \
+            'pivot_root . overlay_root' \
+            'umount -l /overlay_root 2>/dev/null' \
+            'exec /usr/lib/systemd/systemd "$@"' \
+            | sudo tee "$ROOTFS/init" > /dev/null
+          sudo chmod 755 "$ROOTFS/init"
+          sudo mkdir -p "$ROOTFS/overlay_work" "$ROOTFS/overlay_root"
 
           # -- Build LZ4-compressed EROFS image for initerofs --
           echo "Building LZ4-compressed EROFS image..."
