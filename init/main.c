@@ -1708,6 +1708,18 @@ static noinline void __init kernel_init_freeable(void)
 				ramdisk_execute_command, ramdisk_command_access);
 		ramdisk_execute_command = NULL;
 		prepare_namespace();
+
+		/*
+		 * prepare_namespace() may have pivoted to a new root
+		 * filesystem (e.g. initerofs mounting an EROFS image via
+		 * pivot_root).  At the time of the init_eaccess() check
+		 * above, the new root was not yet mounted, so /init was
+		 * absent.  Re-check now so that kernel_init() uses the
+		 * ramdisk /init (e.g. systemd from a dracut initramfs)
+		 * instead of falling through to /sbin/init or /bin/sh.
+		 */
+		if (init_eaccess("/init") == 0)
+			ramdisk_execute_command = "/init";
 	}
 
 	/*

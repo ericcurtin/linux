@@ -479,6 +479,17 @@ void __init prepare_namespace(void)
 
 	initrd_load();
 
+	/*
+	 * initerofs_try_mount() (called from initrd_load) already promoted
+	 * the EROFS image to the root filesystem via pivot_root.  The init
+	 * process on the EROFS is responsible for mounting and switching to
+	 * whatever final root filesystem the user configured (ext4, btrfs,
+	 * xfs, etc.), exactly as it would from a cpio initramfs.  Skip the
+	 * kernel-side mount_root() which would fail on the read-only EROFS.
+	 */
+	if (IS_ENABLED(CONFIG_INITEROFS) && initerofs_is_mounted())
+		return;
+
 	if (root_wait)
 		wait_for_root(saved_root_name);
 	mount_root(saved_root_name);

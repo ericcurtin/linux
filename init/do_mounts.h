@@ -31,9 +31,11 @@ static inline int rd_load_image(void) { return 0; }
 #ifdef CONFIG_INITEROFS
 void __init initerofs_set_detected(void);
 bool __init initerofs_try_mount(void);
+bool __init initerofs_is_mounted(void);
 #else
 static inline void initerofs_set_detected(void) { }
 static inline bool initerofs_try_mount(void) { return false; }
+static inline bool initerofs_is_mounted(void) { return false; }
 #endif
 
 #ifdef CONFIG_BLK_DEV_INITRD
