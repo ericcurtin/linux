@@ -286,24 +286,33 @@ jobs:
           # -- Prepare EROFS initramfs with overlay wrapper --
           # EROFS is read-only, but dracut scripts need to write files
           # (state files, udev rules, hook scripts) during early boot.
-          # Replace /init with a wrapper that layers an overlayfs (tmpfs
-          # upper + EROFS lower) before exec'ing the real systemd init.
-          sudo rm -f "$ROOTFS/init"
+          # Add a very-early systemd service that mounts an overlayfs
+          # (tmpfs upper + EROFS lower) on / before any dracut hooks run.
+
+          # Helper script that does the overlay mount
           printf '%s\n' '#!/bin/sh' \
-            '# Overlay wrapper: makes read-only EROFS root writable' \
-            'mount -t proc proc /proc 2>/dev/null' \
-            'mount -t tmpfs tmpfs /overlay_work -o mode=0700' \
-            'mkdir -p /overlay_work/upper /overlay_work/work /overlay_root' \
-            'mount -t overlay overlay /overlay_root -o lowerdir=/,upperdir=/overlay_work/upper,workdir=/overlay_work/work' \
-            'mount --move /proc /overlay_root/proc 2>/dev/null' \
-            'mount --move /overlay_work /overlay_root/overlay_work 2>/dev/null' \
-            'cd /overlay_root' \
-            'pivot_root . overlay_root' \
-            'umount -l /overlay_root 2>/dev/null' \
-            'exec /usr/lib/systemd/systemd "$@"' \
-            | sudo tee "$ROOTFS/init" > /dev/null
-          sudo chmod 755 "$ROOTFS/init"
-          sudo mkdir -p "$ROOTFS/overlay_work" "$ROOTFS/overlay_root"
+            'mount -t tmpfs tmpfs /overlay_work -o mode=0755' \
+            'mkdir /overlay_work/upper /overlay_work/work' \
+            'mount -t overlay overlay / -o lowerdir=/,upperdir=/overlay_work/upper,workdir=/overlay_work/work' \
+            | sudo tee "$ROOTFS/usr/bin/initerofs-overlay" > /dev/null
+          sudo chmod 755 "$ROOTFS/usr/bin/initerofs-overlay"
+          sudo mkdir -p "$ROOTFS/overlay_work"
+
+          # Systemd unit that runs before everything else in the initrd
+          sudo mkdir -p "$ROOTFS/usr/lib/systemd/system/initrd.target.wants"
+          printf '%s\n' \
+            '[Unit]' \
+            'Description=Mount overlayfs over read-only EROFS root' \
+            'DefaultDependencies=no' \
+            'Before=initrd-root-fs.target dracut-cmdline.service dracut-pre-udev.service systemd-journald.socket systemd-tmpfiles-setup-dev-early.service' \
+            '' \
+            '[Service]' \
+            'Type=oneshot' \
+            'ExecStart=/usr/bin/initerofs-overlay' \
+            'RemainAfterExit=yes' \
+            | sudo tee "$ROOTFS/usr/lib/systemd/system/initerofs-overlay.service" > /dev/null
+          sudo ln -sf ../initerofs-overlay.service \
+            "$ROOTFS/usr/lib/systemd/system/initrd.target.wants/initerofs-overlay.service"
 
           # -- Build LZ4-compressed EROFS image for initerofs --
           echo "Building LZ4-compressed EROFS image..."
