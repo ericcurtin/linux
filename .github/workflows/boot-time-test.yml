@@ -172,7 +172,7 @@ jobs:
 
           [Service]
           Type=oneshot
-          ExecStart=/bin/bash -c "read -r uptime _ < /proc/uptime; echo BOOT_TIME_MARKER: \${uptime} seconds"
+          ExecStart=/bin/bash -c "read -r uptime _ < /proc/uptime; echo BOOT_TIME_MARKER: $${uptime} seconds"
           ExecStartPost=/bin/bash -c "sync; echo o > /proc/sysrq-trigger"
           StandardOutput=journal+console
 
